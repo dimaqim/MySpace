@@ -422,8 +422,14 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
     if p:
         ratio         = grams / 100
         brand_display = p.get("brand") or brand
-        eff_unit      = unit if unit != "г" else (p.get("default_unit") or unit)
-        cat           = p.get("category") or infer_category(name, eff_unit)
+        # Приоритет unit: от пользователя > default_unit из БД
+        eff_unit = unit if unit == "мл" else (p.get("default_unit") or unit)
+        # Категория: из БД > по infer_category (unit="мл" всегда даёт "напиток")
+        cat = p.get("category") or infer_category(name, eff_unit)
+        # Защита: если default_unit в БД = "мл", это напиток в любом случае
+        if p.get("default_unit") == "мл":
+            cat = "напиток"
+            eff_unit = "мл"
         return {
             "product_name": name, "grams": grams, "unit": eff_unit, "brand": brand_display, "category": cat,
             "calories": round(p["calories"] * ratio, 1),
