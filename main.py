@@ -688,7 +688,7 @@ def fmt_workout(d: dict) -> str:
     parts.append("\nПодтверждаешь?")
     return "\n".join(parts)
 
-def fmt_meal_session(data: dict) -> str:
+def fmt_meal_session(data: dict, show_footer: bool = True) -> str:
     items     = data.get("items", [])
     meal_type = data.get("meal_type", "приём пищи")
     log_date  = data.get("date", today_str())
@@ -719,8 +719,9 @@ def fmt_meal_session(data: dict) -> str:
         lines += fmt_items_section(drink_items, "🥤", "Напитки")
 
     lines.append(f"\n📊 *Итого:* {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
-    lines.append("\nЭто всё или добавишь ещё?")
-    lines.append("_(«да» — записываю / «нет» — жду ещё продукты)_")
+    if show_footer:
+        lines.append("\nЭто всё или добавишь ещё?")
+        lines.append("_(«да» — записываю / «нет» — жду ещё продукты)_")
     return "\n".join(lines)
 
 def fmt_reminder(d: dict) -> str:
@@ -1432,7 +1433,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         lines = []
         total_cal = total_p = total_f = total_c = 0
         for meal in resolved_meals:
-            lines.append(fmt_meal_session({"meal_type": meal["meal_type"], "items": meal["items"]}))
+            lines.append(fmt_meal_session({"meal_type": meal["meal_type"], "items": meal["items"]}, show_footer=False))
             total_cal += sum(it.get("calories", 0) for it in meal["items"])
             total_p   += sum(it.get("protein",  0) for it in meal["items"])
             total_f   += sum(it.get("fat",      0) for it in meal["items"])
