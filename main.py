@@ -488,6 +488,17 @@ async def save_action(pending: dict) -> str:
         return (f"✅ {meal_label} записан!\n"
                 f"{total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
 
+    if t == "add_product":
+        supabase.table("products").insert({
+            "name":     data.get("name"),
+            "brand":    data.get("brand"),
+            "calories": data.get("calories"),
+            "protein":  data.get("protein"),
+            "fat":      data.get("fat"),
+            "carbs":    data.get("carbs"),
+        }).execute()
+        return f"✅ Продукт «{data.get('name')}» добавлен в базу!"
+
     if t == "body_measurement":
         data["date"] = td
         supabase.table("body_measurements").upsert(data, on_conflict="date").execute()
