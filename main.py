@@ -1674,8 +1674,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await file.download_to_drive(tmp_path)
         text = await transcribe_voice(tmp_path)
+    except Exception as e:
+        logger.error(f"voice transcribe error: {e}")
+        await notify_error(context.bot, f"voice: {e}")
+        await update.message.reply_text("⚠️ Не смог распознать голос. Попробуй ещё раз или напиши текстом.")
+        return
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    if not text or not text.strip():
+        await update.message.reply_text("🎙 Не расслышал. Скажи ещё раз чуть чётче.")
+        return
+
     await update.message.reply_text(f"🎙 «{text}»")
     await process_message(update, context, text)
 
@@ -1721,7 +1732,39 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"label image: {e}")
 
-    await update.message.reply_text("Не смог распознать. Отправь скриншот весов или фото этикетки.")
+    # Пробуем как фото еды на тарелке
+    try:
+        raw = await gpt_vision(image_bytes,
+            "На изображении блюдо/еда на тарелке. Определи каждый продукт, прикинь вес порции в граммах "
+            "и КБЖУ для этой порции (не на 100г, а для показанного количества). "
+            "Верни ТОЛЬКО JSON: {\"items\":[{\"name\":\"...\",\"grams\":число,\"calories\":число,\"protein\":число,\"fat\":число,\"carbs\":число}]}"
+        )
+        d = parse_json(raw)
+        items = d.get("items") or []
+        if items:
+            resolved = []
+            for it in items:
+                resolved.append({
+                    "product_name": it.get("name", "продукт"),
+                    "grams":    float(it.get("grams") or 100),
+                    "unit":     "г",
+                    "category": infer_category(it.get("name",""), "г"),
+                    "calories": round(float(it.get("calories") or 0), 1),
+                    "protein":  round(float(it.get("protein")  or 0), 1),
+                    "fat":      round(float(it.get("fat")      or 0), 1),
+                    "carbs":    round(float(it.get("carbs")    or 0), 1),
+                    "auto_estimated": True,
+                })
+            save_pending("food_log", {"items": resolved, "date": today_str(), "meal_type": None},
+                         update.message.message_id)
+            await update.message.reply_text(
+                "📷 *Распознал по фото* _(оценка ИИ, можешь поправить граммовку)_\n\n"
+                + fmt_food(resolved), parse_mode="Markdown")
+            return
+    except Exception as e:
+        logger.error(f"food image: {e}")
+
+    await update.message.reply_text("Не смог распознать. Отправь скриншот весов, фото этикетки или фото еды.")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_message(update, context, update.message.text.strip())
