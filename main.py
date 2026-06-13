@@ -241,12 +241,13 @@ async def _resolve_item(item: dict) -> dict:
     """
     name  = item.get("name", "")
     grams = float(item.get("grams", 100))
+    unit  = item.get("unit", "г")
 
     # Если пользователь передал КБЖУ на 100г — используем их
     if item.get("cal100") is not None:
         ratio = grams / 100
         return {
-            "product_name": name, "grams": grams,
+            "product_name": name, "grams": grams, "unit": unit,
             "calories": round(item["cal100"] * ratio, 1),
             "protein":  round((item.get("pro100") or 0) * ratio, 1),
             "fat":      round((item.get("fat100") or 0) * ratio, 1),
@@ -257,7 +258,9 @@ async def _resolve_item(item: dict) -> dict:
         }
 
     # Иначе ищем через get_nutrition (база → интернет → GPT)
-    return await get_nutrition(name, grams)
+    result = await get_nutrition(name, grams)
+    result["unit"] = unit
+    return result
 
 # ── Классификатор ─────────────────────────────────────────────────────
 
@@ -282,22 +285,26 @@ async def classify(text: str) -> dict:
 ТИПЫ:
 
 "meal_session" — пользователь описывает приём пищи с НЕСКОЛЬКИМИ продуктами (готовит, перечисляет ингредиенты, делает шаурму/салат/ужин)
-data: {{"meal_type":"завтрак/обед/ужин/перекус", "items":[{{"name":"продукт","grams":число,"cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
-cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г, иначе null
+data: {{"meal_type":"завтрак/обед/ужин/перекус", "items":[{{"name":"продукт","grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г/100мл, иначе null
+unit: "мл" для НАПИТКОВ (вода, сок, кефир, молоко, кола, энергетик, чай, кофе, смузи, йогурт питьевой и любые жидкости), "г" для всего остального
 Примеры:
-"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session
-"готовлю ужин: лаваш Кулиничі 80г (на 100г: жиры 10, белки 15, угл 80), помидор 100г" → meal_session с cal100 для лаваша
-"на обед: гречка 200г и куриная грудка 150г и огурец 100г" → meal_session
+"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session (всё unit:"г")
+"на обед: гречка 200г и куриная грудка 150г и огурец 100г" → meal_session (всё unit:"г")
+"завтрак: овсянка 100г, молоко 200мл, апельсиновый сок 250мл" → meal_session (овсянка unit:"г", молоко и сок unit:"мл")
 
-"food_log" — ОДИН или ДВА продукта, человек просто говорит что съел без контекста приготовления
-data: [{{"name":"название", "grams": число}}]
+"food_log" — ОДИН или ДВА продукта, человек просто говорит что съел/выпил без контекста приготовления
+data: [{{"name":"название", "grams": число, "unit": "г или мл"}}]
+unit: "мл" для НАПИТКОВ (вода, сок, кефир, молоко, кола, энергетик, чай, кофе и любые жидкости), "г" для еды
 Примеры:
-"съел сникерс" → food_log
-"съел 200г гречки и курицу 150г" → food_log (только 2 продукта)
-"буду кушать милкивей" → food_log
-"я съел курицу 600 грамм, посчитай калории" → food_log
-"сколько калорий в 200г гречки" → food_log
-ВАЖНО: если человек называет конкретный продукт + граммы + просит посчитать — это food_log, НЕ query
+"съел сникерс" → food_log unit:"г"
+"съел 200г гречки и курицу 150г" → food_log (только 2 продукта, оба unit:"г")
+"буду кушать милкивей" → food_log unit:"г"
+"я съел курицу 600 грамм, посчитай калории" → food_log unit:"г"
+"выпил Red Bull 250мл" → food_log unit:"мл"
+"выпил стакан молока" → food_log unit:"мл", grams:250
+"выпил кефир 200г" → food_log unit:"мл" (кефир — напиток, конвертируем г→мл)
+ВАЖНО: если человек называет конкретный продукт + граммы/мл + просит посчитать — это food_log, НЕ query
 
 "food_clarify" — уточнение граммов к предыдущему запросу еды (просто число или "N грамм/г")
 data: {{"grams": число}}
@@ -367,8 +374,9 @@ data: {{"period":"today/week/month"}}
 def fmt_food(items: list) -> str:
     lines = ["📝 *Записать приём пищи?*\n"]
     for it in items:
-        est = " _(оценка ИИ)_" if it.get("auto_estimated") else ""
-        lines.append(f"• {it['product_name']}: {it['grams']} г — {round(it.get('calories') or 0)} ккал{est}")
+        est  = " _(оценка ИИ)_" if it.get("auto_estimated") else ""
+        unit = it.get("unit", "г")
+        lines.append(f"• {it['product_name']}: {it['grams']} {unit} — {round(it.get('calories') or 0)} ккал{est}")
     total_cal = sum(it.get("calories") or 0 for it in items)
     total_p   = sum(it.get("protein")  or 0 for it in items)
     total_f   = sum(it.get("fat")      or 0 for it in items)
@@ -422,9 +430,10 @@ def fmt_meal_session(data: dict) -> str:
 
     lines = [f"🍽 *{meal_type.capitalize()} — {now_t}*\n"]
     for it in items:
-        cal = round(it.get("calories") or 0)
-        src = " _(ИИ)_" if it.get("auto_estimated") else ""
-        lines.append(f"• {it['product_name']}: {it['grams']}г — {cal} ккал{src}")
+        cal  = round(it.get("calories") or 0)
+        src  = " _(ИИ)_" if it.get("auto_estimated") else ""
+        unit = it.get("unit", "г")
+        lines.append(f"• {it['product_name']}: {it['grams']}{unit} — {cal} ккал{src}")
         lines.append(f"  Б {round(it.get('protein') or 0)}г | Ж {round(it.get('fat') or 0)}г | У {round(it.get('carbs') or 0)}г")
     lines.append(f"\n📊 *Итого:*")
     lines.append(f"{round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
@@ -462,6 +471,7 @@ async def save_action(pending: dict) -> str:
                 "fat":      it.get("fat"),
                 "carbs":    it.get("carbs"),
                 "meal_type": meal_type,
+                "unit":     it.get("unit", "г"),
             }
             if it.get("product_id"):
                 row["product_id"] = it["product_id"]
@@ -595,7 +605,8 @@ def get_today_stats() -> str:
         lines.append(f"🍽 *Питание:* {round(total_cal)}/{cal_goal} ккал (осталось {remaining})")
         lines.append(f"   Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
         for r in food:
-            lines.append(f"   • {r.get('product_name')}: {r.get('grams')}г — {round(r.get('calories') or 0)} ккал")
+            unit = r.get("unit", "г")
+            lines.append(f"   • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
     else:
         lines.append("🍽 Питание: ничего не записано")
 
@@ -704,7 +715,8 @@ def get_food_stats_today() -> str:
 
     lines = ["🍽 *Сегодня съел:*\n"]
     for r in food:
-        lines.append(f"• {r.get('product_name')}: {r.get('grams')}г — {round(r.get('calories') or 0)} ккал")
+        unit = r.get("unit", "г")
+        lines.append(f"• {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
     lines.append(f"\n📊 Итого: {total_cal} ккал из {cal_goal}")
     lines.append(f"Б {total_p}г | Ж {total_f}г | У {total_c}г")
     if remaining > 0:
@@ -822,6 +834,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         for item in raw:
             try:
                 result = await get_nutrition(item["name"], float(item.get("grams", 100)))
+                result["unit"] = item.get("unit", "г")
                 items.append(result)
             except Exception as e:
                 logger.error(f"get_nutrition error for {item}: {e}")
@@ -839,6 +852,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         fat      = float(data.get("fat", 0))
         carbs    = float(data.get("carbs", 0))
         name     = data.get("name", "продукт")
+        unit     = data.get("unit", "г")
 
         # Пересчитываем на 100г для сохранения в базу продуктов
         ratio100 = 100 / grams if grams else 1
@@ -848,7 +862,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         carb100  = round(carbs    * ratio100, 1)
 
         item = {
-            "product_name": name, "grams": grams,
+            "product_name": name, "grams": grams, "unit": unit,
             "calories": calories, "protein": protein, "fat": fat, "carbs": carbs,
             "cal100": cal100, "pro100": pro100, "fat100": fat100, "carb100": carb100,
             "auto_estimated": True,
