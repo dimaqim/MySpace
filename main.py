@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 
+import anthropic
 from groq import AsyncGroq
 from tavily import TavilyClient
 from openai import AsyncOpenAI
@@ -26,10 +27,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 MY_CHAT_ID     = os.getenv("MY_CHAT_ID")
 TIMEZONE       = os.getenv("TIMEZONE", "Europe/Kiev")
 
-groq_client   = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-tavily        = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-ai            = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+groq_client    = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+tavily         = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+ai             = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+claude         = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 TZ = pytz.timezone(TIMEZONE)
 
@@ -147,26 +151,28 @@ async def transcribe_voice(file_path: str) -> str:
         )
     return r.text
 
-async def gpt(system: str, user: str, model: str = "gpt-4o") -> str:
-    """gpt-4o основная модель для текста"""
-    r = await ai.chat.completions.create(
-        model=model, timeout=30,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        max_tokens=1500
+async def gpt(system: str, user: str, model: str = CLAUDE_MODEL) -> str:
+    """Claude — основная модель для текста и классификации"""
+    r = await claude.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1500,
+        system=system,
+        messages=[{"role": "user", "content": user}]
     )
-    return r.choices[0].message.content
+    return r.content[0].text
 
 async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
-    """gpt-4o для анализа изображений"""
+    """Claude Vision — анализ изображений"""
     b64 = base64.b64encode(image_bytes).decode()
-    r = await ai.chat.completions.create(
-        model="gpt-4o", timeout=40,
+    r = await claude.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1000,
         messages=[{"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
             {"type": "text", "text": prompt}
-        ]}], max_tokens=1000
+        ]}]
     )
-    return r.choices[0].message.content
+    return r.content[0].text
 
 # ── Поиск КБЖУ ───────────────────────────────────────────────────────
 
