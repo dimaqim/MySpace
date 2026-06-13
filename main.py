@@ -706,8 +706,58 @@ def get_food_stats_today() -> str:
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     pending = get_pending()
+    t_low   = text.lower().strip()
 
-    # Подтверждение / отмена
+    # ── meal_session: ВСЕГДА проверяем первым ──
+    # чтобы «нет» = «жду ещё продукты», а не «отмена»
+    if pending and pending["type"] == "meal_session":
+
+        if any(t_low == w or t_low.startswith(w) for w in DONE_WORDS):
+            clear_pending(pending["id"])
+            msg = await save_action(pending)
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            return
+
+        if any(t_low == w or t_low.startswith(w) for w in MORE_WORDS):
+            await update.message.reply_text("Хорошо, жду следующие продукты 👂")
+            return
+
+        # Классифицируем чтобы понять — новые продукты или что-то другое
+        try:
+            c = await classify(text)
+            msg_type = c.get("type")
+            data     = c.get("data", {})
+        except Exception as e:
+            logger.error(f"classify error in meal_session: {e}")
+            await update.message.reply_text("Не понял. Добавь продукты или напиши «да» чтобы сохранить ужин.")
+            return
+
+        if msg_type in ("food_log", "meal_session"):
+            new_raw = data if isinstance(data, list) else data.get("items", [])
+            if new_raw:
+                await update.message.reply_text("⏳ Ищу КБЖУ для новых продуктов...")
+                existing_items = pending["data"].get("items", [])
+                for item in new_raw:
+                    try:
+                        existing_items.append(await _resolve_item(item))
+                    except Exception as e:
+                        logger.error(f"resolve item error: {e}")
+                pending["data"]["items"] = existing_items
+                save_pending("meal_session", pending["data"], update.message.message_id)
+                await update.message.reply_text(fmt_meal_session(pending["data"]), parse_mode="Markdown")
+                return
+
+        # Если написал что-то не связанное с едой — уточняем
+        await update.message.reply_text(
+            "У тебя открыт приём пищи.\n\n"
+            "Напиши продукты чтобы добавить, или:\n"
+            "• *«да»* — сохранить как есть\n"
+            "• *«отмена»* — отменить",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ── Общий confirm/deny для остальных pending ──
     if pending:
         if is_confirm(text):
             clear_pending(pending["id"])
@@ -726,47 +776,11 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         data     = c.get("data", {})
     except Exception as e:
         logger.error(f"classify error: {e}")
-        reply = await gpt(
-            "Ты личный ассистент. Ответь кратко на русском. Если не понял — попроси уточнить.",
-            text
-        )
+        reply = await gpt("Ты личный ассистент. Ответь кратко на русском.", text)
         await update.message.reply_text(reply)
         return
 
-    # ── meal_session: активная сессия приёма пищи ──
-    # Если есть открытая сессия и пользователь говорит "да/всё" → сохраняем
-    if pending and pending["type"] == "meal_session":
-        t_low = text.lower().strip()
-
-        if any(w in t_low for w in DONE_WORDS):
-            clear_pending(pending["id"])
-            msg = await save_action(pending)
-            await update.message.reply_text(msg, parse_mode="Markdown")
-            return
-
-        if any(w in t_low for w in MORE_WORDS):
-            await update.message.reply_text("Хорошо, жду следующие продукты 👂")
-            return
-
-        # Пользователь добавляет ещё продукты в текущую сессию
-        if msg_type in ("food_log", "meal_session"):
-            new_raw = data if isinstance(data, list) else data.get("items", [])
-            if new_raw:
-                await update.message.reply_text("⏳ Ищу КБЖУ для новых продуктов...")
-                existing_items = pending["data"].get("items", [])
-                for item in new_raw:
-                    try:
-                        result = await _resolve_item(item)
-                        existing_items.append(result)
-                    except Exception as e:
-                        logger.error(f"resolve item error: {e}")
-
-                pending["data"]["items"] = existing_items
-                save_pending("meal_session", pending["data"], update.message.message_id)
-                await update.message.reply_text(fmt_meal_session(pending["data"]), parse_mode="Markdown")
-                return
-
-    # ── food_clarify: уточнение граммов к предыдущему запросу ──
+    # ── food_clarify: уточнение граммов ──
     if msg_type == "food_clarify" and pending and pending["type"] == "food_log":
         new_grams = float(data.get("grams", 100))
         items = pending["data"].get("items", [])
