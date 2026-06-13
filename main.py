@@ -135,15 +135,31 @@ async def get_nutrition(product_name: str, grams: float) -> dict:
             "product_id": p["id"], "auto_estimated": False,
         }
 
-    # 2. Tavily поиск в интернете
+    # 2. Tavily — сначала ищем на таблице калорийности (украинский/русский сайт)
     macros = None
+    NUTRITION_SITES = [
+        "tablycjakalorijnosti.com.ua",
+        "calorizator.ru",
+        "fatsecret.ru",
+    ]
     try:
+        # Приоритет: украинская таблица калорийности
         result = tavily.search(
-            query=f"{product_name} калорийность КБЖУ белки жиры углеводы на 100 грамм",
-            search_depth="basic", max_results=3
+            query=f"{product_name} калорийність КБЖУ білки жири вуглеводи на 100 грам",
+            search_depth="basic", max_results=5,
+            include_domains=NUTRITION_SITES
         )
         content = " ".join([r.get("content", "") for r in result.get("results", [])])[:3000]
-        if content:
+
+        # Если на спец-сайтах не нашли — обычный поиск
+        if not content or len(content) < 50:
+            result = tavily.search(
+                query=f"{product_name} калорийность белки жиры углеводы на 100 грамм КБЖУ",
+                search_depth="basic", max_results=3
+            )
+            content = " ".join([r.get("content", "") for r in result.get("results", [])])[:3000]
+
+        if content and len(content) > 50:
             raw = await gpt(
                 "Ты эксперт по питанию. Из текста извлеки КБЖУ на 100г. Верни ТОЛЬКО JSON без лишнего текста: {\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}. Если данных нет — верни {\"calories\": null}.",
                 f"Продукт: {product_name}\n\nТекст: {content}"
