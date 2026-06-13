@@ -244,7 +244,8 @@ data: {{"title":"...", "due_date":null, "priority":"normal/high/low"}}
 "goal" — записать долгосрочную цель
 data: {{"title":"...", "category":"здоровье/финансы/...", "target_date":null}}
 
-"query_today" — что произошло сегодня, сводка дня
+"query_today" — общая сводка дня ("что сегодня делал", "итог дня", "как я сегодня")
+"query_food" — ТОЛЬКО вопросы о еде ("что съел", "что я ел", "что я уже съел", "сколько калорий съел", "что я кушал")
 "query_workout" — вопрос о тренировках (сколько бегал, был ли в зале)
 "query_finances" — вопрос о деньгах/тратах
 data: {{"period":"today/week/month"}}
@@ -528,20 +529,27 @@ def get_food_stats_today() -> str:
     td = today_str()
     food = supabase.table("food_log").select("*").eq("date", td).execute().data or []
     goals_r = supabase.table("daily_goals").select("*").eq("date", td).execute()
+
     if not food:
-        return "Сегодня питание не записано. Скажи что ел — запишу!"
+        return "Сегодня ты ещё ничего не записывал 🍽\n\nПросто скажи что ел — я запишу с КБЖУ."
+
     g = goals_r.data[0] if goals_r.data else None
     cal_goal = g["calories"] if g else 1856
     total_cal = round(sum(r.get("calories") or 0 for r in food))
     total_p   = round(sum(r.get("protein")  or 0 for r in food))
     total_f   = round(sum(r.get("fat")      or 0 for r in food))
     total_c   = round(sum(r.get("carbs")    or 0 for r in food))
-    lines = ["🍽 *Питание сегодня:*\n"]
+    remaining = cal_goal - total_cal
+
+    lines = ["🍽 *Сегодня съел:*\n"]
     for r in food:
         lines.append(f"• {r.get('product_name')}: {r.get('grams')}г — {round(r.get('calories') or 0)} ккал")
-    lines.append(f"\n📊 Итого: {total_cal}/{cal_goal} ккал")
+    lines.append(f"\n📊 Итого: {total_cal} ккал из {cal_goal}")
     lines.append(f"Б {total_p}г | Ж {total_f}г | У {total_c}г")
-    lines.append(f"Осталось: {cal_goal - total_cal} ккал")
+    if remaining > 0:
+        lines.append(f"Осталось: {remaining} ккал")
+    else:
+        lines.append(f"Перебор: {abs(remaining)} ккал ⚠️")
     return "\n".join(lines)
 
 # ── Основной обработчик ───────────────────────────────────────────────
