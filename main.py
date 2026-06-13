@@ -541,15 +541,29 @@ async def classify(text: str) -> dict:
             model=CLAUDE_MODEL,
             max_tokens=1500,
             system=system,
-            messages=[
-                {"role": "user", "content": text},
-                {"role": "assistant", "content": "{"},  # prefill → чистый JSON без markdown
-            ]
+            messages=[{"role": "user", "content": text}]
         ),
         timeout=40
     )
-    raw = "{" + r.content[0].text
-    return parse_json(raw)
+    raw = r.content[0].text.strip()
+    logger.info(f"classify raw: {raw[:200]}")
+
+    # Вытаскиваем JSON из ответа — поддерживаем разные форматы
+    # 1. Чистый JSON
+    # 2. ```json ... ```
+    # 3. JSON внутри текста
+    import re as _re
+    # Убираем markdown блок
+    match = _re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, _re.DOTALL)
+    if match:
+        raw = match.group(1)
+    else:
+        # Берём первый {...} блок
+        match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if match:
+            raw = match.group(0)
+
+    return json.loads(raw)
 
 # ── Форматирование ────────────────────────────────────────────────────
 
