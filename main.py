@@ -512,6 +512,9 @@ async def classify(text: str) -> dict:
 ═══ ФОРМАТЫ ═══
 
 "food_log" data: {{"date":"{today}","meal_type":null,"items":[{{"name":"...","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+• meal_type: "завтрак/обед/ужин/перекус" если упомянут, иначе null
+• "вчера на завтрак выпил Red Bull" → date={yesterday}, meal_type="завтрак"
+• "выпил Red Bull" (без приёма) → meal_type=null
 • unit: "мл" для любых напитков, "г" для еды
 • grams если не указано: яблоко=150г, банан=120г, сникерс=55г, стакан=250мл, кружка=300мл
 • Red Bull всегда 1 банка = 250мл:
@@ -1599,6 +1602,13 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         if del_product:
             q = q.ilike("product_name", f"%{del_product}%")
         rows = q.execute().data or []
+
+        # Если с meal_type не нашло — ищем без него (запись могла сохраниться без meal_type)
+        if not rows and del_meal:
+            q2 = supabase.table("food_log").select("*").eq("date", del_date)
+            if del_product:
+                q2 = q2.ilike("product_name", f"%{del_product}%")
+            rows = q2.execute().data or []
 
         if not rows:
             date_label = "вчера" if del_date != td else "сегодня"
