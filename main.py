@@ -239,28 +239,76 @@ async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
 
 # ── Поиск КБЖУ ───────────────────────────────────────────────────────
 
+# Синонимы: слово пользователя → основа для поиска в базе
+PRODUCT_SYNONYMS = {
+    "курица": "кури", "куриная": "кури", "куриное": "кури", "курочка": "кури",
+    "грудка": "грудк", "филе": "филе",
+    "помидор": "помидор", "томат": "помидор", "помидорка": "помидор",
+    "огурчик": "огур", "огурец": "огур",
+    "картошка": "картоф", "картофель": "картоф", "картоха": "картоф",
+    "гречка": "гречк", "гречу": "гречк",
+    "творожок": "творог", "творог": "творог",
+}
+
+_STOP_WORDS = {"сырая", "сырое", "сырой", "свежий", "свежая", "сухой", "сухая",
+               "армянский", "белый", "по-корейски", "замороженные", "глазурованный"}
+
+def _stem(word: str) -> str:
+    """Грубая основа русского слова — отрезаем окончание."""
+    w = word.lower().strip(".,!?;:()")
+    if len(w) <= 4:
+        return w
+    return w[:max(4, len(w) - 2)]
+
+def _match_score(query: str, product_name: str) -> int:
+    """Оценка совпадения запроса с названием продукта."""
+    q = query.lower().strip()
+    pn = (product_name or "").lower()
+    # Прямое вхождение — самый сильный сигнал
+    if q in pn:
+        return 100
+    q_words = [w for w in q.split() if len(w) >= 3 and w not in _STOP_WORDS]
+    p_words = [w for w in pn.split() if w not in _STOP_WORDS]
+    score = 0
+    for qw in q_words:
+        stem_q = PRODUCT_SYNONYMS.get(qw, _stem(qw))
+        for pw in p_words:
+            stem_p = PRODUCT_SYNONYMS.get(pw, _stem(pw))
+            if stem_q == stem_p or stem_q in pw or stem_p in qw:
+                score += 10
+                break
+    return score
+
 def find_in_db(product_name: str, brand: str = None) -> dict | None:
-    """Ищет продукт сначала в кэше, потом в Supabase."""
+    """Ищет продукт сначала в кэше (умное сопоставление), потом в Supabase."""
     name_lower = product_name.lower()
 
-    # Поиск в кэше
+    # Поиск в кэше с оценкой совпадения
     if _products_cache:
-        candidates = [p for p in _products_cache if name_lower in (p.get("name") or "").lower()]
-        if brand and candidates:
-            for p in candidates:
+        scored = []
+        for p in _products_cache:
+            s = _match_score(product_name, p.get("name") or "")
+            if brand and p.get("brand") and brand.lower() in (p["brand"] or "").lower():
+                s += 50
+            if s > 0:
+                # При равном счёте — короче название = ближе к общему продукту
+                scored.append((s, -len(p.get("name") or ""), p))
+        if scored:
+            scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            return scored[0][2]
+
+    # Fallback в Supabase (если кэш пуст)
+    try:
+        if brand:
+            rows = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(10).execute().data or []
+            for p in rows:
                 if p.get("brand") and brand.lower() in (p["brand"] or "").lower():
                     return p
-        if candidates:
-            return candidates[0]
-
-    # Fallback в Supabase (если кэш пуст или не нашли)
-    if brand:
-        rows = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(10).execute().data or []
-        for p in rows:
-            if p.get("brand") and brand.lower() in (p["brand"] or "").lower():
-                return p
-    r = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
-    return r.data[0] if r.data else None
+        r = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
+        return r.data[0] if r.data else None
+    except Exception as e:
+        logger.error(f"find_in_db fallback error: {e}")
+        return None
 
 def infer_category(name: str, unit: str = "г") -> str:
     """Определяет категорию продукта по единице измерения и имени."""
