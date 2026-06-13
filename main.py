@@ -153,24 +153,32 @@ async def transcribe_voice(file_path: str) -> str:
 
 async def gpt(system: str, user: str, model: str = CLAUDE_MODEL) -> str:
     """Claude — основная модель для текста и классификации"""
-    r = await claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1500,
-        system=system,
-        messages=[{"role": "user", "content": user}]
+    import asyncio
+    r = await asyncio.wait_for(
+        claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1500,
+            system=system,
+            messages=[{"role": "user", "content": user}]
+        ),
+        timeout=40
     )
     return r.content[0].text
 
 async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
     """Claude Vision — анализ изображений"""
+    import asyncio
     b64 = base64.b64encode(image_bytes).decode()
-    r = await claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1000,
-        messages=[{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-            {"type": "text", "text": prompt}
-        ]}]
+    r = await asyncio.wait_for(
+        claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                {"type": "text", "text": prompt}
+            ]}]
+        ),
+        timeout=40
     )
     return r.content[0].text
 
@@ -577,7 +585,20 @@ data: {{"from_date":null}}
 
 Верни JSON: {{"type":"...", "data":...}}"""
 
-    raw = await gpt(system, text)
+    import asyncio
+    r = await asyncio.wait_for(
+        claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1500,
+            system=system,
+            messages=[
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": "{"},  # prefill → чистый JSON без markdown
+            ]
+        ),
+        timeout=40
+    )
+    raw = "{" + r.content[0].text
     return parse_json(raw)
 
 # ── Форматирование ────────────────────────────────────────────────────
