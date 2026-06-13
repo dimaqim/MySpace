@@ -444,11 +444,16 @@ async def classify(text: str) -> dict:
 
 ТИПЫ:
 
-"meal_session" — пользователь описывает приём пищи с НЕСКОЛЬКИМИ продуктами (готовит, перечисляет ингредиенты; или записывает задним числом)
+"multi_meal" — пользователь описывает НЕСКОЛЬКО приёмов пищи в одном сообщении (завтрак И обед, или завтрак/обед/ужин сразу)
+data: {{"meals":[{{"meal_type":"завтрак/обед/ужин/перекус","date":"{now.strftime('%Y-%m-%d')}","items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}]}}
+Примеры:
+"на завтрак съел лаваш 80г и помидор 300г, на обед курицу 300г" → multi_meal, meals:[{{завтрак: лаваш+помидор}}, {{обед: курица}}]
+"сегодня завтрак: овсянка 100г. обед: гречка 200г, курица 150г. ужин: ничего" → multi_meal (ужин без продуктов — пропусти)
+"вчера на завтрак ел яйца 3шт, на обед борщ 400г" → multi_meal, date=вчера для каждого
+
+"meal_session" — пользователь описывает ОДИН приём пищи с несколькими продуктами (готовит, перечисляет ингредиенты)
 data: {{"meal_type":"завтрак/обед/ужин/перекус", "date":"{now.strftime('%Y-%m-%d')}", "items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
 date: дата приёма пищи. Сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}, позавчера={(now-timedelta(days=2)).strftime('%Y-%m-%d')}
-Если пользователь говорит "сегодня забыл записать завтрак" — date=сегодня, meal_type=завтрак
-Если "вчера на ужин ел" — date=вчера, meal_type=ужин
 cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г/100мл, иначе null
 brand — заполни если упомянут бренд/марка, иначе null
 unit: "мл" для НАПИТКОВ, "г" для всего остального
@@ -737,6 +742,40 @@ async def save_action(pending: dict) -> str:
         date_label = f" за {log_date}" if log_date != td else ""
         return (f"✅{meal_label}{date_label} записан!\n"
                 f"{total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
+
+    if t == "multi_meal":
+        meals = data.get("meals", [])
+        logged_at = now_local().isoformat()
+        total_cal = total_p = total_f = total_c = 0
+        saved_meals = []
+        for meal in meals:
+            meal_type = meal.get("meal_type")
+            log_date  = meal.get("date", td)
+            items     = meal.get("items", [])
+            for it in items:
+                row = {
+                    "date": log_date, "logged_at": logged_at,
+                    "product_name": it.get("product_name"),
+                    "grams":    it.get("grams"),
+                    "calories": it.get("calories"),
+                    "protein":  it.get("protein"),
+                    "fat":      it.get("fat"),
+                    "carbs":    it.get("carbs"),
+                    "meal_type": meal_type,
+                    "unit":     it.get("unit", "г"),
+                }
+                if it.get("product_id"):
+                    row["product_id"] = it["product_id"]
+                supabase.table("food_log").insert(row).execute()
+            meal_cal = round(sum(it.get("calories") or 0 for it in items))
+            total_cal += meal_cal
+            total_p   += sum(it.get("protein") or 0 for it in items)
+            total_f   += sum(it.get("fat")     or 0 for it in items)
+            total_c   += sum(it.get("carbs")   or 0 for it in items)
+            saved_meals.append(f"✅ {meal_type.capitalize()} — {meal_cal} ккал")
+        result = "\n".join(saved_meals)
+        result += f"\n\n📊 Итого: {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г"
+        return result
 
     if t == "add_product":
         supabase.table("products").insert({
@@ -1317,6 +1356,44 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         )
 
     # ── meal_session: новый приём пищи с несколькими продуктами ──
+    elif msg_type == "multi_meal":
+        meals = data.get("meals", [])
+        meals = [m for m in meals if m.get("items")]  # убираем пустые (ужин без продуктов)
+        if not meals:
+            await update.message.reply_text("Не понял состав. Назови продукты и граммы.")
+            return
+        await update.message.reply_text("⏳ Ищу КБЖУ для всех продуктов...")
+        resolved_meals = []
+        for meal in meals:
+            resolved_items = []
+            for item in meal.get("items", []):
+                try:
+                    resolved_items.append(await _resolve_item(item))
+                except Exception as e:
+                    logger.error(f"resolve {item}: {e}")
+            if resolved_items:
+                resolved_meals.append({
+                    "meal_type": meal.get("meal_type", "приём пищи"),
+                    "date": meal.get("date", today_str()),
+                    "items": resolved_items,
+                })
+        if not resolved_meals:
+            await update.message.reply_text("Не смог найти КБЖУ. Попробуй ещё раз.")
+            return
+        # Показываем все приёмы пищи
+        lines = []
+        total_cal = total_p = total_f = total_c = 0
+        for meal in resolved_meals:
+            lines.append(fmt_meal_session({"meal_type": meal["meal_type"], "items": meal["items"]}))
+            total_cal += sum(it.get("calories", 0) for it in meal["items"])
+            total_p   += sum(it.get("protein",  0) for it in meal["items"])
+            total_f   += sum(it.get("fat",      0) for it in meal["items"])
+            total_c   += sum(it.get("carbs",    0) for it in meal["items"])
+        lines.append(f"\n📊 *Итого за день:* {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+        lines.append("\nВсё верно? Сохраняю?\n*(«да» — записываю / «нет» — отмена)*")
+        save_pending("multi_meal", {"meals": resolved_meals}, update.message.message_id)
+        await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
     elif msg_type == "meal_session":
         raw_items = data.get("items", [])
         meal_type = data.get("meal_type", "приём пищи")
