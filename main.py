@@ -83,7 +83,7 @@ CURRENCY_MAP = {
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def today_str():
-    return date.today().isoformat()
+    return now_local().strftime("%Y-%m-%d")
 
 def now_local():
     return datetime.now(TZ)
