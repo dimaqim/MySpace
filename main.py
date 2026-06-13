@@ -363,9 +363,16 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
     4. auto_search=False → возвращаем {"not_found": True, ...} (для food_log, чтобы спросить пользователя)
     """
     name  = item.get("name", "")
-    grams = float(item.get("grams", 100))
     unit  = item.get("unit", "г")
     brand = item.get("brand") or None
+
+    # Если граммы не указаны — проверяем default_grams в базе
+    raw_grams = item.get("grams")
+    if raw_grams is None or float(raw_grams) == 100:
+        _db_check = find_in_db(name, brand)
+        if _db_check and _db_check.get("default_grams"):
+            raw_grams = float(_db_check["default_grams"])
+    grams = float(raw_grams) if raw_grams is not None else 100.0
 
     # Восстанавливаем cal100 из макросов если не указан явно
     pro100  = item.get("pro100")
@@ -470,6 +477,11 @@ cal100/pro100/fat100/carb100 — заполни если пользовател�
 brand — заполни если упомянут бренд/марка
 unit: "мл" для НАПИТКОВ, "г" для еды
 grams: если не указаны — оцени (яблоко ≈ 150г, сникерс ≈ 55г, стакан воды ≈ 250мл)
+ВАЖНО — Red Bull всегда 250мл за банку:
+"выпил Red Bull" / "выпил Red Bull Zero" → grams=250, unit="мл", name="Red Bull Zero"
+"выпил Red Bull арбуз" / "выпил Red Bull Watermelon" → grams=250, unit="мл", name="Red Bull Watermelon"
+"выпил Red Bull тропик" / "выпил Red Bull Tropical" → grams=250, unit="мл", name="Red Bull Tropical"
+"выпил 2 Red Bull Zero" → grams=500, unit="мл"
 Примеры:
 "съел сникерс" → items:[{{"name":"Сникерс","grams":55,"unit":"г",...}}], date=сегодня
 "вчера на завтрак съел яблоко" → date=вчера, meal_type:"завтрак", items:[{{"name":"яблоко","grams":150,...}}]
