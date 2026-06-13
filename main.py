@@ -103,6 +103,37 @@ def today_str():
 def now_local():
     return datetime.now(TZ)
 
+def infer_meal_by_time() -> str:
+    """Определяет приём пищи по текущему времени, если не указан явно."""
+    h = now_local().hour
+    if 5 <= h < 11:
+        return "завтрак"
+    if 11 <= h < 16:
+        return "обед"
+    if 16 <= h < 23:
+        return "ужин"
+    return "перекус"  # ночь
+
+# ── Память контекста (последние сообщения) ────────────────────────────
+from collections import deque
+_chat_history: dict = {}
+
+def remember_msg(chat_id, role: str, text: str):
+    if chat_id not in _chat_history:
+        _chat_history[chat_id] = deque(maxlen=6)
+    _chat_history[chat_id].append((role, text))
+
+def recent_context(chat_id) -> str:
+    """Последние сообщения как текстовый контекст для классификатора."""
+    hist = _chat_history.get(chat_id)
+    if not hist:
+        return ""
+    lines = []
+    for role, txt in hist:
+        who = "Пользователь" if role == "user" else "Бот"
+        lines.append(f"{who}: {txt[:150]}")
+    return "\n".join(lines)
+
 def is_confirm(text: str) -> bool:
     t = text.lower().strip()
     return any(t == w or t.startswith(w + " ") for w in CONFIRM_WORDS)
@@ -486,7 +517,7 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
 
 # ── Классификатор ─────────────────────────────────────────────────────
 
-async def classify(text: str) -> dict:
+async def classify(text: str, context_str: str = "") -> dict:
     now = now_local()
     # Вычисляем полезные даты
     weekday        = now.weekday()  # 0=пн, 6=вс
@@ -593,8 +624,25 @@ async def classify(text: str) -> dict:
 • "удали то что я вчера пил банку редбула" → {{"date":"{yesterday}","meal_type":null,"product_name":"Red Bull"}}
 • "удали курицу из обеда" → {{"date":"{today}","meal_type":"обед","product_name":"курица"}}
 
+"edit_food_log" data: {{"target":"last/product","product_name":null,"new_grams":null,"new_meal_type":null}}
+• Правка ПОСЛЕДНЕЙ записи еды (не удаление, не новая запись).
+• Триггеры: "поправь", "исправь", "измени", "не 300 а 200", "это был обед а не завтрак", "переправь"
+• "поправь последнюю на 250г" → {{"target":"last","new_grams":250}}
+• "не 300 грамм а 200" → {{"target":"last","new_grams":200}}
+• "это был обед а не завтрак" → {{"target":"last","new_meal_type":"обед"}}
+• "исправь курицу на 200г" → {{"target":"product","product_name":"курица","new_grams":200}}
+• ВАЖНО: если в КОНТЕКСТЕ выше бот только что записал еду и пользователь поправляет количество — это edit_food_log
+
 "general_chat" data: {{}}
 • ТОЛЬКО если ничего выше не подходит (вопросы не про еду/здоровье/финансы)"""
+
+    user_content = text
+    if context_str:
+        user_content = (
+            f"=== КОНТЕКСТ (последние сообщения, для понимания ссылок типа «а нет, 200г») ===\n"
+            f"{context_str}\n=== КОНЕЦ КОНТЕКСТА ===\n\n"
+            f"Новое сообщение пользователя: {text}"
+        )
 
     import asyncio
     r = await asyncio.wait_for(
@@ -602,7 +650,7 @@ async def classify(text: str) -> dict:
             model=CLAUDE_MODEL,
             max_tokens=1500,
             system=system,
-            messages=[{"role": "user", "content": text}]
+            messages=[{"role": "user", "content": user_content}]
         ),
         timeout=40
     )
@@ -1102,6 +1150,10 @@ def get_food_stats_today() -> str:
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     pending = get_pending()
     t_low   = text.lower().strip()
+    chat_id = update.effective_chat.id
+    # Контекст последних сообщений (до записи текущего)
+    ctx_str = recent_context(chat_id)
+    remember_msg(chat_id, "user", text)
 
     # ── weigh_morning: ответы на утренний запрос взвешивания ──
     # Не блокирует другие действия — просто перехватываем целевые фразы
@@ -1311,9 +1363,9 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             await update.message.reply_text("Отменено.")
             return
 
-    # Классификация
+    # Классификация (с контекстом последних сообщений)
     try:
-        c = await classify(text)
+        c = await classify(text, context_str=ctx_str)
         msg_type = c.get("type")
         data     = c.get("data", {})
     except Exception as e:
@@ -1357,6 +1409,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             raw          = data if isinstance(data, list) else []
             log_date     = today_str()
             meal_type_fl = None
+
+        # Если приём пищи не указан и запись за сегодня — определяем по времени
+        if not meal_type_fl and log_date == today_str():
+            meal_type_fl = infer_meal_by_time()
 
         if not raw:
             await update.message.reply_text("Не понял что ты съел. Напиши например: «съел 200г гречки и куриную грудку 150г»")
@@ -1402,6 +1458,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         pending_data = {"items": resolved, "date": log_date, "meal_type": meal_type_fl}
         save_pending("food_log", pending_data, update.message.message_id)
         await update.message.reply_text(fmt_food(resolved, log_date, meal_type_fl), parse_mode="Markdown")
+        _summary = ", ".join(f"{it['product_name']} {it['grams']}{it.get('unit','г')}" for it in resolved)
+        remember_msg(chat_id, "bot", f"показал к записи ({meal_type_fl or 'без приёма'}): {_summary}")
 
     # ── food_log_known_macros: съел X г + КБЖУ указан для этого количества ──
     elif msg_type == "food_log_known_macros":
@@ -1591,6 +1649,55 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             diff = round(rows[0]["weight"] - rows[-1]["weight"], 1)
             lines.append(f"\nИзменение: {diff:+} кг за {len(rows)} замеров")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    elif msg_type == "edit_food_log":
+        target       = data.get("target", "last")
+        edit_product = data.get("product_name")
+        new_grams    = data.get("new_grams")
+        new_meal     = data.get("new_meal_type")
+        td           = today_str()
+
+        # Находим запись для правки: по продукту или последнюю за сегодня
+        if target == "product" and edit_product:
+            rows = supabase.table("food_log").select("*").eq("date", td) \
+                .ilike("product_name", f"%{edit_product}%").order("created_at", desc=True).limit(1).execute().data or []
+        else:
+            rows = supabase.table("food_log").select("*").eq("date", td) \
+                .order("created_at", desc=True).limit(1).execute().data or []
+
+        if not rows:
+            await update.message.reply_text("Нет записи для исправления. Сначала запиши еду.")
+            return
+
+        row = rows[0]
+        updates = {}
+        changes = []
+
+        if new_grams is not None:
+            old_g = float(row.get("grams") or 100)
+            ng    = float(new_grams)
+            ratio = ng / old_g if old_g else 1
+            updates["grams"]    = ng
+            updates["calories"] = round((row.get("calories") or 0) * ratio, 1)
+            updates["protein"]  = round((row.get("protein")  or 0) * ratio, 1)
+            updates["fat"]      = round((row.get("fat")      or 0) * ratio, 1)
+            updates["carbs"]    = round((row.get("carbs")    or 0) * ratio, 1)
+            unit = row.get("unit", "г")
+            changes.append(f"{old_g:g}{unit} → {ng:g}{unit}")
+
+        if new_meal:
+            updates["meal_type"] = new_meal
+            changes.append(f"приём → {new_meal}")
+
+        if not updates:
+            await update.message.reply_text("Не понял что исправить. Напиши например «поправь последнюю на 250г».")
+            return
+
+        supabase.table("food_log").update(updates).eq("id", row["id"]).execute()
+        new_cal = round(updates.get("calories", row.get("calories") or 0))
+        reply = f"✏️ Исправлено: *{row['product_name']}*\n" + "\n".join(f"• {c}" for c in changes) + f"\n→ {new_cal} ккал"
+        await update.message.reply_text(reply, parse_mode="Markdown")
+        remember_msg(chat_id, "bot", reply)
 
     elif msg_type == "delete_food_log":
         del_date     = data.get("date") or today_str()
