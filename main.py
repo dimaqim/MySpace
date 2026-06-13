@@ -513,7 +513,10 @@ async def classify(text: str) -> dict:
 
 "food_log" data: {{"date":"{today}","meal_type":null,"items":[{{"name":"...","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
 • meal_type: "завтрак/обед/ужин/перекус" если упомянут, иначе null
+• ВАЖНО: "на завтрак", "на завтра" (опечатка завтрак), "за завтраком" → meal_type="завтрак"
+• "на обед/за обедом"→"обед", "на ужин/за ужином"→"ужин", "на перекус"→"перекус"
 • "вчера на завтрак выпил Red Bull" → date={yesterday}, meal_type="завтрак"
+• "вчера на завтра выпил банку ред булла" → date={yesterday}, meal_type="завтрак"
 • "выпил Red Bull" (без приёма) → meal_type=null
 • unit: "мл" для любых напитков, "г" для еды
 • grams если не указано: яблоко=150г, банан=120г, сникерс=55г, стакан=250мл, кружка=300мл
@@ -1595,30 +1598,38 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         del_product  = data.get("product_name")
         td           = today_str()
 
-        # Формируем запрос
-        q = supabase.table("food_log").select("*").eq("date", del_date)
-        if del_meal:
-            q = q.eq("meal_type", del_meal)
-        if del_product:
-            q = q.ilike("product_name", f"%{del_product}%")
-        rows = q.execute().data or []
+        date_label = "вчера" if del_date != td else "сегодня"
 
-        # Если с meal_type не нашло — ищем без него (запись могла сохраниться без meal_type)
-        if not rows and del_meal:
-            q2 = supabase.table("food_log").select("*").eq("date", del_date)
-            if del_product:
-                q2 = q2.ilike("product_name", f"%{del_product}%")
-            rows = q2.execute().data or []
+        # Берём ВСЕ записи за этот день
+        all_day = supabase.table("food_log").select("*").eq("date", del_date).execute().data or []
 
-        if not rows:
-            date_label = "вчера" if del_date != td else "сегодня"
-            meal_label = f" ({del_meal})" if del_meal else ""
-            prod_label = f" — {del_product}" if del_product else ""
-            await update.message.reply_text(f"Записей не найдено: {date_label}{meal_label}{prod_label}")
+        if not all_day:
+            await update.message.reply_text(f"За {date_label} ({del_date}) вообще нет записей о еде.")
             return
 
-        # Показываем что удалим и просим подтвердить
-        lines = ["🗑 *Удалить эти записи?*\n"]
+        # Фильтруем по приёму пищи и продукту, но мягко
+        rows = list(all_day)
+        used_meal_filter = False
+        used_prod_filter = False
+        if del_meal:
+            filtered = [r for r in rows if (r.get("meal_type") or "").lower() == del_meal.lower()]
+            if filtered:
+                rows = filtered
+                used_meal_filter = True
+        if del_product:
+            filtered = [r for r in rows if del_product.lower() in (r.get("product_name") or "").lower()]
+            if filtered:
+                rows = filtered
+                used_prod_filter = True
+
+        # Поясняем если точного совпадения не было, но что-то за день есть
+        note = ""
+        if del_meal and not used_meal_filter:
+            note = f"_(записи «{del_meal}» нет, но за {date_label} есть это:)_\n\n"
+        elif del_product and not used_prod_filter:
+            note = f"_(«{del_product}» не нашёл, но за {date_label} есть это:)_\n\n"
+
+        lines = [f"🗑 *Удалить за {date_label}?*\n", note] if note else [f"🗑 *Удалить за {date_label}?*\n"]
         for r in rows:
             unit = r.get("unit", "г")
             mt   = f"[{r.get('meal_type')}] " if r.get("meal_type") else ""
@@ -1828,9 +1839,18 @@ def _fmt_food_drink_day(rows: list, header: str) -> str:
 
 def get_food_history(query_date: str, meal_type: str = None) -> str:
     """Питание за конкретный день (с фильтром по приёму пищи)."""
-    food = supabase.table("food_log").select("*").eq("date", query_date).execute().data or []
+    all_food = supabase.table("food_log").select("*").eq("date", query_date).execute().data or []
+    food = all_food
+    fallback_note = ""
     if meal_type:
-        food = [r for r in food if (r.get("meal_type") or "").lower() == meal_type.lower()]
+        filtered = [r for r in all_food if (r.get("meal_type") or "").lower() == meal_type.lower()]
+        if filtered:
+            food = filtered
+        elif all_food:
+            # Нет записей с этим приёмом, но за день что-то есть — показываем всё
+            food = all_food
+            meal_type = None
+            fallback_note = "_(отдельной записи на этот приём нет, вот всё за день:)_\n"
 
     try:
         from datetime import datetime as _dt
@@ -1840,6 +1860,8 @@ def get_food_history(query_date: str, meal_type: str = None) -> str:
 
     mt_label = f" — {meal_type}" if meal_type else ""
     header = f"🍽 *Питание за {d_label}{mt_label}*"
+    if fallback_note:
+        header += f"\n{fallback_note}"
 
     if not meal_type:
         # Группируем по приёму пищи
