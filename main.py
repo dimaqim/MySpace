@@ -11,11 +11,9 @@ from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 
 from groq import AsyncGroq
-import google.generativeai as genai
 from tavily import TavilyClient
 from openai import AsyncOpenAI
 from supabase import create_client, Client
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
@@ -24,21 +22,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── Clients ───────────────────────────────────────────────────────────
-TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN")
-MY_CHAT_ID      = os.getenv("MY_CHAT_ID")          # твой Telegram chat_id для сводки
-TIMEZONE        = os.getenv("TIMEZONE", "Europe/Kiev")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+MY_CHAT_ID     = os.getenv("MY_CHAT_ID")
+TIMEZONE       = os.getenv("TIMEZONE", "Europe/Kiev")
 
-groq_client    = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini         = genai.GenerativeModel("gemini-2.5-flash-lite-preview-06-17")
-tavily         = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-openai_client  = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+groq_client   = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+tavily        = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+ai            = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 TZ = pytz.timezone(TIMEZONE)
 
-CONFIRM_WORDS = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "давай", "сохрани", "конечно"]
+CONFIRM_WORDS = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "давай", "сохрани", "конечно", "го", "ага"]
 DENY_WORDS    = ["нет", "неверно", "не то", "отмена", "cancel", "no", "стоп", "не надо", "отмени"]
+
+CURRENCY_MAP = {
+    "гривен": "UAH", "гривна": "UAH", "грн": "UAH", "грн.": "UAH", "₴": "UAH",
+    "рублей": "RUB", "рубль": "RUB", "рублей": "RUB", "руб": "RUB", "₽": "RUB",
+    "долларов": "USD", "доллар": "USD", "баксов": "USD", "$": "USD",
+    "евро": "EUR", "€": "EUR",
+}
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -75,174 +78,239 @@ def parse_json(text: str) -> dict:
     if "```" in text:
         parts = text.split("```")
         text = parts[1] if len(parts) >= 2 else text
-        if text.startswith("json"):
+        if text.lower().startswith("json"):
             text = text[4:]
     return json.loads(text.strip())
 
 # ── AI calls ─────────────────────────────────────────────────────────
 
 async def transcribe_voice(file_path: str) -> str:
-    """Groq Whisper — дёшево и быстро"""
+    """Groq Whisper — дёшево ($0.04/час)"""
     with open(file_path, "rb") as f:
         r = await groq_client.audio.transcriptions.create(
             model="whisper-large-v3-turbo", file=f, language="ru"
         )
     return r.text
 
-async def gemini_text(prompt: str) -> str:
-    """Gemini Flash-Lite — основная модель для текста"""
-    try:
-        r = await gemini.generate_content_async(prompt)
-        return r.text
-    except Exception as e:
-        logger.warning(f"Gemini error, fallback to OpenAI: {e}")
-        return await openai_fallback(prompt)
-
-async def gemini_image(image_bytes: bytes, prompt: str) -> str:
-    """Gemini Flash-Lite — анализ изображений"""
-    try:
-        import PIL.Image
-        import io
-        img = PIL.Image.open(io.BytesIO(image_bytes))
-        r = await gemini.generate_content_async([prompt, img])
-        return r.text
-    except Exception as e:
-        logger.warning(f"Gemini vision error, fallback to OpenAI: {e}")
-        b64 = base64.b64encode(image_bytes).decode()
-        r = await openai_client.chat.completions.create(
-            model="gpt-4o", timeout=30,
-            messages=[{"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                {"type": "text", "text": prompt}
-            ]}], max_tokens=1000
-        )
-        return r.choices[0].message.content
-
-async def openai_fallback(prompt: str) -> str:
-    """OpenAI — только когда Gemini не справился"""
-    r = await openai_client.chat.completions.create(
-        model="gpt-4o-mini", timeout=30,
-        messages=[{"role": "user", "content": prompt}], max_tokens=1000
+async def gpt(system: str, user: str, model: str = "gpt-4o-mini") -> str:
+    """gpt-4o-mini основная модель для текста"""
+    r = await ai.chat.completions.create(
+        model=model, timeout=30,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        max_tokens=1500
     )
     return r.choices[0].message.content
 
-async def search_product_nutrition(product_name: str) -> dict | None:
-    """Tavily — поиск КБЖУ в интернете"""
+async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
+    """gpt-4o для анализа изображений"""
+    b64 = base64.b64encode(image_bytes).decode()
+    r = await ai.chat.completions.create(
+        model="gpt-4o", timeout=40,
+        messages=[{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            {"type": "text", "text": prompt}
+        ]}], max_tokens=1000
+    )
+    return r.choices[0].message.content
+
+# ── Поиск КБЖУ ───────────────────────────────────────────────────────
+
+async def get_nutrition(product_name: str, grams: float) -> dict:
+    """
+    1. Ищем в нашей базе
+    2. Ищем через Tavily в интернете
+    3. Fallback — GPT оценивает по памяти
+    """
+    # 1. База продуктов
+    found = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
+    if found.data:
+        p = found.data[0]
+        ratio = grams / 100
+        return {
+            "product_name": product_name, "grams": grams,
+            "calories": round(p["calories"] * ratio, 1),
+            "protein":  round(p["protein"]  * ratio, 1),
+            "fat":      round(p["fat"]       * ratio, 1),
+            "carbs":    round(p["carbs"]     * ratio, 1),
+            "product_id": p["id"], "auto_estimated": False,
+        }
+
+    # 2. Tavily поиск в интернете
+    macros = None
     try:
         result = tavily.search(
-            query=f"{product_name} калорийность КБЖУ на 100 грамм белки жиры углеводы",
+            query=f"{product_name} калорийность КБЖУ белки жиры углеводы на 100 грамм",
             search_depth="basic", max_results=3
         )
-        content = "\n".join([r.get("content", "") for r in result.get("results", [])])
-        if not content:
-            return None
-        prompt = f"""Из этого текста извлеки КБЖУ продукта "{product_name}" на 100г.
-Верни ТОЛЬКО JSON:
-{{"calories": число, "protein": число, "fat": число, "carbs": число}}
-Если данных нет — верни null.
-
-Текст:
-{content[:2000]}"""
-        raw = await gemini_text(prompt)
-        if "null" in raw.lower():
-            return None
-        return parse_json(raw)
+        content = " ".join([r.get("content", "") for r in result.get("results", [])])[:3000]
+        if content:
+            raw = await gpt(
+                "Ты эксперт по питанию. Из текста извлеки КБЖУ на 100г. Верни ТОЛЬКО JSON без лишнего текста: {\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}. Если данных нет — верни {\"calories\": null}.",
+                f"Продукт: {product_name}\n\nТекст: {content}"
+            )
+            parsed = parse_json(raw)
+            if parsed.get("calories"):
+                macros = parsed
     except Exception as e:
-        logger.error(f"Tavily search error: {e}")
-        return None
+        logger.warning(f"Tavily error for {product_name}: {e}")
 
-async def estimate_nutrition_gpt(product_name: str) -> dict:
-    """Fallback: GPT оценивает КБЖУ если интернет не помог"""
-    prompt = f"""Ты эксперт по питанию. Укажи среднее КБЖУ для "{product_name}" на 100г.
-Верни ТОЛЬКО JSON: {{"calories": число, "protein": число, "fat": число, "carbs": число}}"""
-    raw = await gemini_text(prompt)
-    return parse_json(raw)
+    # 3. GPT по памяти
+    if not macros:
+        raw = await gpt(
+            "Ты эксперт по питанию. Укажи КБЖУ продукта на 100г. Верни ТОЛЬКО JSON: {\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}",
+            f"Продукт: {product_name}"
+        )
+        macros = parse_json(raw)
+
+    ratio = grams / 100
+    return {
+        "product_name": product_name, "grams": grams,
+        "calories": round(macros["calories"] * ratio, 1),
+        "protein":  round(macros["protein"]  * ratio, 1),
+        "fat":      round(macros["fat"]       * ratio, 1),
+        "carbs":    round(macros["carbs"]     * ratio, 1),
+        "cal100": macros["calories"], "pro100": macros["protein"],
+        "fat100": macros["fat"],      "carb100": macros["carbs"],
+        "auto_estimated": True,
+    }
 
 # ── Классификатор ─────────────────────────────────────────────────────
 
 async def classify(text: str) -> dict:
     now = now_local()
-    prompt = f"""Ты классификатор персонального ассистента. Сегодня: {now.strftime('%A %d %B %Y %H:%M')} (timezone: {TIMEZONE}).
-Определи тип сообщения и верни ТОЛЬКО JSON.
+    # Вычисляем полезные даты
+    weekday = now.weekday()  # 0=пн, 6=вс
+    days_to_sunday = 6 - weekday
+    end_of_week = (now + timedelta(days=days_to_sunday)).strftime("%Y-%m-%d")
+    next_monday  = (now + timedelta(days=7 - weekday)).strftime("%Y-%m-%d")
+    tomorrow     = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-Типы и формат data:
-- "food_log": [{{"name":"...", "grams": число}}]
-- "add_product": {{"name":"...", "brand":null, "calories":..., "protein":..., "fat":..., "carbs":...}}
-- "body_measurement": {{"weight":..., "fat_percent":..., "muscle_percent":..., ...}}
-- "workout": {{"duration_minutes":..., "location":"...", "exercises":["..."], "notes":"...", "calories_burned":...}}
-- "expense": {{"amount":..., "currency":"RUB", "category":"...", "description":"...", "store_name":null}}
-- "income": {{"amount":..., "currency":"RUB", "category":"...", "description":"..."}}
-- "reminder": {{"text":"...", "remind_at":"ISO datetime", "smart_offset_minutes": число или null}}
-  ВАЖНО для remind_at: если не указано время — ставь 12:00 местного времени. Если событие в 21:00 и нет уточнения — напомни за 10 минут (20:50). Если сказано "через неделю" — от сегодня +7 дней.
-- "daily_goals": {{"has_workout": true/false}}
-- "habit_log": {{"habit_name":"...", "done": true/false, "note":null}}
-- "task": {{"title":"...", "due_date":null, "priority":"normal"}}
-- "goal": {{"title":"...", "category":"...", "target_date":null}}
-- "query_today": {{}}
-- "query_finances": {{"period":"today/week/month"}}
-- "query_weight": {{}}
-- "general_chat": {{"message":"..."}}
+    system = f"""Ты классификатор персонального ассистента. Сегодня: {now.strftime('%A %d %B %Y %H:%M')} (timezone: {TIMEZONE}).
 
-Сообщение пользователя: "{text}"
+Полезные даты:
+- Завтра: {tomorrow}
+- Конец этой недели (воскресенье): {end_of_week}
+- Начало следующей недели (понедельник): {next_monday}
+
+Определи тип сообщения и верни ТОЛЬКО JSON без лишнего текста.
+
+ТИПЫ:
+
+"food_log" — человек говорит что ел/съел/будет есть
+data: [{{"name":"точное название продукта или бренда", "grams": число или 100 если не указано}}]
+Примеры: "съел сникерс" → [{{"name":"Snickers батончик", "grams":50}}]
+"съел 200г гречки и курицу 150г" → [{{"name":"гречка", "grams":200}},{{"name":"куриная грудка", "grams":150}}]
+"буду кушать милкивей" → [{{"name":"Milky Way батончик", "grams":50}}]
+
+"food_clarify" — уточнение граммов к предыдущему запросу еды (просто число или "N грамм/г")
+data: {{"grams": число}}
+Примеры: "100 грамм", "150г", "съел 80г"
+
+"add_product" — добавить продукт с КБЖУ в базу (пользователь явно называет КБЖУ)
+data: {{"name":"...", "brand":null, "calories":..., "protein":..., "fat":..., "carbs":...}}
+
+"body_measurement" — замеры тела текстом
+data: {{"weight":null,"bmi":null,"fat_percent":null,"muscle_percent":null,...}}
+
+"workout" — тренировка, физическая активность
+data: {{"duration_minutes":число или null, "location":"зал/улица/дома", "exercises":["список"], "notes":"...", "calories_burned":null}}
+
+"expense" — трата денег
+data: {{"amount":число, "currency":"RUB/UAH/USD/EUR", "category":"еда/кофе/транспорт/...", "description":"...", "store_name":null или "название магазина"}}
+Определяй валюту: гривен/грн/₴=UAH, рублей/руб/₽=RUB, долларов/$=USD, евро/€=EUR
+
+"income" — получил деньги
+data: {{"amount":число, "currency":"RUB", "category":"зарплата/фриланс/...", "description":"..."}}
+
+"reminder" — напомни в определённое время
+data: {{"text":"что именно напомнить", "remind_at":"YYYY-MM-DDTHH:MM:SS"}}
+Правила времени:
+- Если время не указано → 12:00 текущего дня или указанной даты
+- "в среду" → ближайшая среда
+- "через неделю" → {(now + timedelta(days=7)).strftime('%Y-%m-%d')}T12:00:00
+- "конец недели" → {end_of_week}T12:00:00
+- "в 21:00 будет футбол" без времени напоминания → {now.strftime('%Y-%m-%d')}T20:50:00 (за 10 минут)
+- "напомни в 20:50 что в 21:00 футбол" → {now.strftime('%Y-%m-%d')}T20:50:00
+
+"daily_goals" — посчитать цели питания на день
+data: {{"has_workout": true/false}}
+
+"habit_log" — отметить привычку
+data: {{"habit_name":"...", "done":true/false, "note":null}}
+
+"task" — добавить задачу
+data: {{"title":"...", "due_date":null, "priority":"normal/high/low"}}
+
+"goal" — записать долгосрочную цель
+data: {{"title":"...", "category":"здоровье/финансы/...", "target_date":null}}
+
+"query_today" — что произошло сегодня, сводка дня
+"query_workout" — вопрос о тренировках (сколько бегал, был ли в зале)
+"query_finances" — вопрос о деньгах/тратах
+data: {{"period":"today/week/month"}}
+"query_weight" — вопрос о весе/замерах
+"query_food" — вопрос о питании сегодня
+"general_chat" — всё остальное, вопросы, советы
 
 Верни JSON: {{"type":"...", "data":...}}"""
 
-    raw = await gemini_text(prompt)
+    raw = await gpt(system, text)
     return parse_json(raw)
 
-# ── Форматирование подтверждений ──────────────────────────────────────
+# ── Форматирование ────────────────────────────────────────────────────
 
 def fmt_food(items: list) -> str:
-    lines = ["📝 Записать приём пищи?\n"]
+    lines = ["📝 *Записать приём пищи?*\n"]
     for it in items:
-        cal = it.get('calories')
-        est = " *(оценка ИИ)*" if it.get('auto_estimated') else ""
-        lines.append(f"• {it['product_name']}: {it['grams']} г — {round(cal or 0)} ккал{est}")
-    total_cal = sum(it.get('calories') or 0 for it in items)
-    total_p   = sum(it.get('protein') or 0 for it in items)
-    total_f   = sum(it.get('fat') or 0 for it in items)
-    total_c   = sum(it.get('carbs') or 0 for it in items)
+        est = " _(оценка ИИ)_" if it.get("auto_estimated") else ""
+        lines.append(f"• {it['product_name']}: {it['grams']} г — {round(it.get('calories') or 0)} ккал{est}")
+    total_cal = sum(it.get("calories") or 0 for it in items)
+    total_p   = sum(it.get("protein")  or 0 for it in items)
+    total_f   = sum(it.get("fat")      or 0 for it in items)
+    total_c   = sum(it.get("carbs")    or 0 for it in items)
     lines.append(f"\n📊 {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
     lines.append("\nПодтверждаешь?")
     return "\n".join(lines)
 
 def fmt_measurement(d: dict) -> str:
-    lines = ["⚖️ Записать замер тела?\n"]
-    if d.get("weight"):        lines.append(f"Вес: {d['weight']} кг")
-    if d.get("bmi"):           lines.append(f"ИМТ: {d['bmi']}")
-    if d.get("fat_percent"):   lines.append(f"Жир: {d['fat_percent']}%")
-    if d.get("muscle_percent"):lines.append(f"Мышцы: {d['muscle_percent']}%")
-    if d.get("water_percent"): lines.append(f"Вода: {d['water_percent']}%")
-    if d.get("visceral_fat"):  lines.append(f"Висцеральный жир: {d['visceral_fat']}")
-    if d.get("bmr"):           lines.append(f"Обмен: {d['bmr']} ккал")
+    lines = ["⚖️ *Записать замер тела?*\n"]
+    if d.get("weight"):         lines.append(f"Вес: {d['weight']} кг")
+    if d.get("bmi"):            lines.append(f"ИМТ: {d['bmi']}")
+    if d.get("fat_percent"):    lines.append(f"Жир: {d['fat_percent']}%")
+    if d.get("muscle_percent"): lines.append(f"Мышцы: {d['muscle_percent']}%")
+    if d.get("water_percent"):  lines.append(f"Вода: {d['water_percent']}%")
+    if d.get("visceral_fat"):   lines.append(f"Висцеральный жир: {d['visceral_fat']}")
+    if d.get("bmr"):            lines.append(f"Обмен: {d['bmr']} ккал")
+    if d.get("fat_mass"):       lines.append(f"Жировая масса: {d['fat_mass']} кг")
+    if d.get("lean_mass"):      lines.append(f"Сухая масса: {d['lean_mass']} кг")
     lines.append("\nПодтверждаешь?")
     return "\n".join(lines)
 
 def fmt_expense(d: dict) -> str:
     store = f" в «{d['store_name']}»" if d.get("store_name") else ""
     cat   = f" ({d['category']})" if d.get("category") else ""
-    return (f"💸 Записать расход?\n\n"
-            f"{d['amount']} {d.get('currency','RUB')}{store}{cat}\n"
-            f"{d.get('description','')}\n\nПодтверждаешь?")
+    cur   = d.get("currency", "RUB")
+    return (f"💸 *Записать расход?*\n\n{d['amount']} {cur}{store}{cat}\n{d.get('description','')}\n\nПодтверждаешь?")
 
 def fmt_income(d: dict) -> str:
-    return (f"💰 Записать доход?\n\n"
-            f"+{d['amount']} {d.get('currency','RUB')}\n"
-            f"{d.get('description','')}\n\nПодтверждаешь?")
+    return (f"💰 *Записать доход?*\n\n+{d['amount']} {d.get('currency','RUB')}\n{d.get('description','')}\n\nПодтверждаешь?")
 
 def fmt_workout(d: dict) -> str:
-    dur = f"{d['duration_minutes']} мин" if d.get("duration_minutes") else ""
-    ex  = ", ".join(d.get("exercises") or [])
-    return (f"💪 Записать тренировку?\n\n"
-            f"{dur}\n{ex}\n{d.get('notes','')}\n\nПодтверждаешь?")
+    dur = f"{d['duration_minutes']} мин" if d.get("duration_minutes") else "время не указано"
+    loc = f" ({d['location']})" if d.get("location") else ""
+    ex  = "\n".join(f"  • {e}" for e in (d.get("exercises") or []))
+    parts = [f"💪 *Записать тренировку?*\n", f"Время: {dur}{loc}"]
+    if ex: parts.append(ex)
+    if d.get("notes"): parts.append(d["notes"])
+    parts.append("\nПодтверждаешь?")
+    return "\n".join(parts)
 
 def fmt_reminder(d: dict) -> str:
     dt = datetime.fromisoformat(d["remind_at"])
     if dt.tzinfo is None:
         dt = TZ.localize(dt)
     dt_local = dt.astimezone(TZ)
-    return (f"⏰ Поставить напоминание?\n\n"
-            f"«{d['text']}»\n\n"
+    return (f"⏰ *Поставить напоминание?*\n\n«{d['text']}»\n\n"
             f"Напомню: {dt_local.strftime('%d.%m.%Y в %H:%M')}\n\nПодтверждаешь?")
 
 # ── Сохранение ────────────────────────────────────────────────────────
@@ -258,16 +326,16 @@ async def save_action(pending: dict) -> str:
                    if k in ("product_name","grams","calories","protein","fat","carbs","product_id","meal_number","note")}
             row["date"] = td
             supabase.table("food_log").insert(row).execute()
-            # автосохраняем продукт если его не было в базе
-            if it.get("auto_estimated") and it.get("product_name"):
+            if it.get("auto_estimated") and it.get("product_name") and it.get("cal100"):
                 ex = supabase.table("products").select("id").ilike("name", f"%{it['product_name']}%").limit(1).execute()
                 if not ex.data:
                     supabase.table("products").insert({
                         "name": it["product_name"],
                         "calories": it.get("cal100"), "protein": it.get("pro100"),
-                        "fat": it.get("fat100"), "carbs": it.get("carb100"),
+                        "fat": it.get("fat100"),      "carbs": it.get("carb100"),
                     }).execute()
-        return "✅ Еда записана в дневник!"
+        total = round(sum(it.get("calories") or 0 for it in data.get("items", [])))
+        return f"✅ Записано! +{total} ккал в дневнике."
 
     if t == "body_measurement":
         data["date"] = td
@@ -280,65 +348,59 @@ async def save_action(pending: dict) -> str:
             if ex.data:
                 data["store_id"] = ex.data[0]["id"]
             else:
-                new_store = supabase.table("stores").insert({"name": data["store_name"]}).execute()
-                if new_store.data:
-                    data["store_id"] = new_store.data[0]["id"]
-        data["date"] = td
-        data["type"] = "expense"
+                ns = supabase.table("stores").insert({"name": data["store_name"]}).execute()
+                if ns.data: data["store_id"] = ns.data[0]["id"]
+        data["date"] = td; data["type"] = "expense"
         supabase.table("finances").insert(data).execute()
-        return f"✅ Расход записан: {data['amount']} {data.get('currency','RUB')}"
+        return f"✅ Расход: -{data['amount']} {data.get('currency','RUB')}"
 
     if t == "income":
-        data["date"] = td
-        data["type"] = "income"
+        data["date"] = td; data["type"] = "income"
         supabase.table("finances").insert(data).execute()
-        return f"✅ Доход записан: +{data['amount']} {data.get('currency','RUB')}"
+        return f"✅ Доход: +{data['amount']} {data.get('currency','RUB')}"
 
     if t == "workout":
         data["date"] = td
         supabase.table("workouts").insert(data).execute()
-        return "✅ Тренировка записана!"
+        dur = f"{data.get('duration_minutes')} мин" if data.get("duration_minutes") else ""
+        return f"✅ Тренировка записана! {dur}"
 
     if t == "reminder":
-        supabase.table("reminders").insert({
-            "text": data["text"],
-            "remind_at": data["remind_at"],
-            "is_sent": False
-        }).execute()
-        return "✅ Напоминание поставлено!"
+        supabase.table("reminders").insert({"text": data["text"], "remind_at": data["remind_at"], "is_sent": False}).execute()
+        dt = datetime.fromisoformat(data["remind_at"])
+        if dt.tzinfo is None: dt = TZ.localize(dt)
+        return f"✅ Напомню {dt.astimezone(TZ).strftime('%d.%m в %H:%M')}: «{data['text']}»"
 
     if t == "daily_goals":
-        bm = supabase.table("body_measurements").select("bmr").order("date", desc=True).limit(1).execute()
-        bmr = (bm.data[0]["bmr"] if bm.data and bm.data[0].get("bmr") else 1800)
+        bm  = supabase.table("body_measurements").select("bmr").order("date", desc=True).limit(1).execute()
+        bmr = bm.data[0]["bmr"] if bm.data and bm.data[0].get("bmr") else 1800
         has_w = data.get("has_workout", False)
         cal   = int(bmr * 1.4 if has_w else bmr * 1.2)
         goals = {"date": td, "calories": cal,
                  "protein": int(cal*0.30/4), "fat": int(cal*0.25/9), "carbs": int(cal*0.45/4),
                  "has_workout": has_w, "bmr_used": bmr}
         supabase.table("daily_goals").upsert(goals, on_conflict="date").execute()
-        return f"✅ Цели дня: {cal} ккал ({'с тренировкой' if has_w else 'без тренировки'})"
+        return (f"✅ Цели дня {'с тренировкой' if has_w else 'без тренировки'}:\n"
+                f"🔥 {cal} ккал | Б {goals['protein']}г | Ж {goals['fat']}г | У {goals['carbs']}г")
 
     if t == "habit_log":
         supabase.table("habit_logs").insert({
             "habit_name": data["habit_name"], "date": td,
             "done": data.get("done", True), "note": data.get("note")
         }).execute()
-        status = "✅" if data.get("done", True) else "❌"
-        return f"{status} Привычка «{data['habit_name']}» отмечена!"
+        return f"{'✅' if data.get('done', True) else '❌'} Привычка «{data['habit_name']}» отмечена!"
 
     if t == "task":
         supabase.table("tasks").insert({
-            "title": data["title"], "due_date": data.get("due_date"),
-            "priority": data.get("priority", "normal")
+            "title": data["title"], "due_date": data.get("due_date"), "priority": data.get("priority", "normal")
         }).execute()
-        return f"✅ Задача добавлена: «{data['title']}»"
+        return f"✅ Задача: «{data['title']}»"
 
     if t == "goal":
         supabase.table("goals").insert({
-            "title": data["title"], "category": data.get("category"),
-            "target_date": data.get("target_date")
+            "title": data["title"], "category": data.get("category"), "target_date": data.get("target_date")
         }).execute()
-        return f"✅ Цель записана: «{data['title']}»"
+        return f"✅ Цель: «{data['title']}»"
 
     return "✅ Сохранено!"
 
@@ -346,45 +408,51 @@ async def save_action(pending: dict) -> str:
 
 def get_today_stats() -> str:
     td = today_str()
-    food   = supabase.table("food_log").select("*").eq("date", td).execute().data or []
-    goals  = supabase.table("daily_goals").select("*").eq("date", td).execute()
-    bodies = supabase.table("body_measurements").select("*").order("date", desc=True).limit(1).execute().data or []
-    habits = supabase.table("habit_logs").select("*").eq("date", td).execute().data or []
-    tasks  = supabase.table("tasks").select("*").eq("status", "pending").execute().data or []
-    fin    = supabase.table("finances").select("*").eq("date", td).execute().data or []
+    food    = supabase.table("food_log").select("*").eq("date", td).execute().data or []
+    goals_r = supabase.table("daily_goals").select("*").eq("date", td).execute()
+    bodies  = supabase.table("body_measurements").select("*").order("date", desc=True).limit(1).execute().data or []
+    habits  = supabase.table("habit_logs").select("*").eq("date", td).execute().data or []
+    tasks   = supabase.table("tasks").select("*").eq("status", "pending").execute().data or []
+    fin     = supabase.table("finances").select("*").eq("date", td).execute().data or []
+    workouts= supabase.table("workouts").select("*").eq("date", td).execute().data or []
 
     total_cal = sum(r.get("calories") or 0 for r in food)
     total_p   = sum(r.get("protein")  or 0 for r in food)
     total_f   = sum(r.get("fat")      or 0 for r in food)
     total_c   = sum(r.get("carbs")    or 0 for r in food)
+    income    = sum(r["amount"] for r in fin if r["type"] == "income")
+    expense   = sum(r["amount"] for r in fin if r["type"] == "expense")
 
-    income  = sum(r["amount"] for r in fin if r["type"] == "income")
-    expense = sum(r["amount"] for r in fin if r["type"] == "expense")
-
-    g = goals.data[0] if goals.data else None
+    g = goals_r.data[0] if goals_r.data else None
     cal_goal = g["calories"] if g else 1856
 
     lines = [f"📊 *Итог дня — {td}*\n"]
 
     if food:
-        lines.append(f"🍽 *Питание:* {round(total_cal)}/{cal_goal} ккал")
+        remaining = cal_goal - round(total_cal)
+        lines.append(f"🍽 *Питание:* {round(total_cal)}/{cal_goal} ккал (осталось {remaining})")
         lines.append(f"   Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+        for r in food:
+            lines.append(f"   • {r.get('product_name')}: {r.get('grams')}г — {round(r.get('calories') or 0)} ккал")
     else:
         lines.append("🍽 Питание: ничего не записано")
 
-    workouts_today = supabase.table("workouts").select("*").eq("date", td).execute().data or []
-    if workouts_today:
-        w = workouts_today[0]
-        lines.append(f"💪 *Тренировка:* {w.get('duration_minutes', '?')} мин — {w.get('location', '')}")
+    if workouts:
+        w = workouts[0]
+        loc = f" ({w.get('location')})" if w.get("location") else ""
+        lines.append(f"💪 *Тренировка:* {w.get('duration_minutes', '?')} мин{loc}")
+        if w.get("exercises"):
+            lines.append(f"   {', '.join(w['exercises'])}")
     else:
-        lines.append("💪 Тренировка: не записано")
+        lines.append("💪 Тренировка: не записана")
 
     if bodies:
         b = bodies[0]
         lines.append(f"⚖️ *Вес:* {b.get('weight')} кг (жир {b.get('fat_percent')}%)")
 
     if income or expense:
-        lines.append(f"💰 *Финансы:* +{income} / -{expense} {fin[0].get('currency','RUB') if fin else 'RUB'}")
+        cur = fin[0].get("currency", "RUB") if fin else "RUB"
+        lines.append(f"💰 *Финансы:* +{income} / -{expense} {cur}")
 
     if habits:
         done_h = [h for h in habits if h["done"]]
@@ -408,197 +476,209 @@ def get_finance_stats(period: str) -> str:
         label = "сегодня"
 
     fin = supabase.table("finances").select("*").gte("date", from_date).execute().data or []
-
     income  = sum(r["amount"] for r in fin if r["type"] == "income")
     expense = sum(r["amount"] for r in fin if r["type"] == "expense")
 
-    # По магазинам
     stores: dict = {}
     for r in fin:
         if r["type"] == "expense" and r.get("store_name"):
             stores[r["store_name"]] = stores.get(r["store_name"], 0) + r["amount"]
 
-    # По категориям
     cats: dict = {}
     for r in fin:
         if r["type"] == "expense" and r.get("category"):
             cats[r["category"]] = cats.get(r["category"], 0) + r["amount"]
 
+    cur = fin[0].get("currency", "RUB") if fin else "RUB"
     lines = [f"💰 *Финансы за {label}*\n",
-             f"Доходы: +{income}",
-             f"Расходы: -{expense}",
-             f"Баланс: {income - expense:+.0f}\n"]
+             f"Доходы: +{income} {cur}", f"Расходы: -{expense} {cur}", f"Баланс: {income-expense:+.0f} {cur}\n"]
 
     if stores:
         lines.append("🏪 *По магазинам:*")
         for name, amt in sorted(stores.items(), key=lambda x: -x[1]):
-            lines.append(f"  • {name}: {amt}")
+            lines.append(f"  • {name}: {amt} {cur}")
 
     if cats:
         lines.append("\n📂 *По категориям:*")
         for cat, amt in sorted(cats.items(), key=lambda x: -x[1]):
-            lines.append(f"  • {cat}: {amt}")
+            lines.append(f"  • {cat}: {amt} {cur}")
+
+    if not fin:
+        lines.append("Пока ничего не записано.")
 
     return "\n".join(lines)
 
-# ── Обработка еды ─────────────────────────────────────────────────────
+def get_workout_stats() -> str:
+    td = today_str()
+    workouts = supabase.table("workouts").select("*").eq("date", td).execute().data or []
+    if not workouts:
+        return "Сегодня тренировок не записано. Скажи мне что делал — запишу!"
+    lines = ["💪 *Тренировки сегодня:*\n"]
+    for w in workouts:
+        loc = f" ({w.get('location')})" if w.get("location") else ""
+        lines.append(f"• {w.get('duration_minutes', '?')} мин{loc}")
+        if w.get("exercises"):
+            for ex in w["exercises"]:
+                lines.append(f"  — {ex}")
+        if w.get("notes"):
+            lines.append(f"  {w['notes']}")
+    return "\n".join(lines)
 
-async def process_food_items(raw_items: list) -> list:
-    log_items = []
-    for item in raw_items:
-        name  = item.get("name", "")
-        grams = float(item.get("grams", 100))
+def get_food_stats_today() -> str:
+    td = today_str()
+    food = supabase.table("food_log").select("*").eq("date", td).execute().data or []
+    goals_r = supabase.table("daily_goals").select("*").eq("date", td).execute()
+    if not food:
+        return "Сегодня питание не записано. Скажи что ел — запишу!"
+    g = goals_r.data[0] if goals_r.data else None
+    cal_goal = g["calories"] if g else 1856
+    total_cal = round(sum(r.get("calories") or 0 for r in food))
+    total_p   = round(sum(r.get("protein")  or 0 for r in food))
+    total_f   = round(sum(r.get("fat")      or 0 for r in food))
+    total_c   = round(sum(r.get("carbs")    or 0 for r in food))
+    lines = ["🍽 *Питание сегодня:*\n"]
+    for r in food:
+        lines.append(f"• {r.get('product_name')}: {r.get('grams')}г — {round(r.get('calories') or 0)} ккал")
+    lines.append(f"\n📊 Итого: {total_cal}/{cal_goal} ккал")
+    lines.append(f"Б {total_p}г | Ж {total_f}г | У {total_c}г")
+    lines.append(f"Осталось: {cal_goal - total_cal} ккал")
+    return "\n".join(lines)
 
-        # 1. Ищем в нашей базе
-        found = supabase.table("products").select("*").ilike("name", f"%{name}%").limit(1).execute()
-        if found.data:
-            p = found.data[0]; ratio = grams / 100
-            log_items.append({
-                "product_name": name, "grams": grams,
-                "calories": round(p["calories"] * ratio, 1),
-                "protein":  round(p["protein"]  * ratio, 1),
-                "fat":      round(p["fat"]       * ratio, 1),
-                "carbs":    round(p["carbs"]     * ratio, 1),
-                "product_id": p["id"], "auto_estimated": False,
-            })
-            continue
-
-        # 2. Ищем в интернете через Tavily
-        macros = await search_product_nutrition(name)
-
-        # 3. Fallback — GPT оценивает
-        if not macros:
-            macros = await estimate_nutrition_gpt(name)
-
-        ratio = grams / 100
-        log_items.append({
-            "product_name": name, "grams": grams,
-            "calories": round(macros["calories"] * ratio, 1),
-            "protein":  round(macros["protein"]  * ratio, 1),
-            "fat":      round(macros["fat"]       * ratio, 1),
-            "carbs":    round(macros["carbs"]     * ratio, 1),
-            "cal100": macros["calories"], "pro100": macros["protein"],
-            "fat100": macros["fat"],      "carb100": macros["carbs"],
-            "auto_estimated": True,
-        })
-    return log_items
-
-# ── Обработка изображений ─────────────────────────────────────────────
-
-async def analyze_scale_image(image_bytes: bytes) -> dict:
-    prompt = """На этом изображении — скриншот приложения умных весов. Извлеки все числовые показатели.
-Верни ТОЛЬКО JSON:
-{"weight":null,"bmi":null,"fat_percent":null,"muscle_percent":null,"water_percent":null,"visceral_fat":null,"bmr":null,"fat_mass":null,"lean_mass":null,"bone_mass":null}"""
-    raw = await gemini_image(image_bytes, prompt)
-    return parse_json(raw)
-
-async def analyze_label_image(image_bytes: bytes) -> dict:
-    prompt = """На этом изображении — этикетка продукта. Извлеки название, бренд и КБЖУ на 100г.
-Верни ТОЛЬКО JSON:
-{"name":"...","brand":null,"calories":0,"protein":0,"fat":0,"carbs":0}"""
-    raw = await gemini_image(image_bytes, prompt)
-    return parse_json(raw)
-
-# ── Основной обработчик текста ────────────────────────────────────────
+# ── Основной обработчик ───────────────────────────────────────────────
 
 async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     pending = get_pending()
 
-    # Проверяем подтверждение
+    # Подтверждение / отмена
     if pending:
         if is_confirm(text):
             clear_pending(pending["id"])
             msg = await save_action(pending)
-            await update.message.reply_text(msg)
+            await update.message.reply_text(msg, parse_mode="Markdown")
             return
         elif is_deny(text):
             clear_pending(pending["id"])
             await update.message.reply_text("Отменено.")
             return
 
-    # Классифицируем
+    # Классификация
     try:
-        classified = await classify(text)
-        msg_type = classified.get("type")
-        data     = classified.get("data", {})
+        c = await classify(text)
+        msg_type = c.get("type")
+        data     = c.get("data", {})
     except Exception as e:
         logger.error(f"classify error: {e}")
-        await update.message.reply_text("Не смог понять запрос, попробуй переформулировать.")
+        reply = await gpt(
+            "Ты личный ассистент. Ответь кратко на русском. Если не понял — попроси уточнить.",
+            text
+        )
+        await update.message.reply_text(reply)
         return
+
+    # ── food_clarify: уточнение граммов к предыдущему запросу ──
+    if msg_type == "food_clarify" and pending and pending["type"] == "food_log":
+        new_grams = float(data.get("grams", 100))
+        items = pending["data"].get("items", [])
+        if items:
+            old_name  = items[0]["product_name"]
+            old_grams = items[0]["grams"]
+            await update.message.reply_text(f"⏳ Пересчитываю на {new_grams}г...")
+            # Пересчитываем через коэффициент
+            if old_grams and old_grams != new_grams:
+                ratio = new_grams / old_grams
+                items[0]["grams"]    = new_grams
+                items[0]["calories"] = round((items[0].get("calories") or 0) * ratio, 1)
+                items[0]["protein"]  = round((items[0].get("protein")  or 0) * ratio, 1)
+                items[0]["fat"]      = round((items[0].get("fat")      or 0) * ratio, 1)
+                items[0]["carbs"]    = round((items[0].get("carbs")    or 0) * ratio, 1)
+            save_pending("food_log", {"items": items}, update.message.message_id)
+            await update.message.reply_text(fmt_food(items), parse_mode="Markdown")
+            return
 
     # ── food_log ──
     if msg_type == "food_log":
-        raw = data if isinstance(data, list) else data.get("items", [])
+        raw = data if isinstance(data, list) else []
         if not raw:
             await update.message.reply_text("Не понял что ты съел. Напиши например: «съел 200г гречки и куриную грудку 150г»")
             return
         await update.message.reply_text("⏳ Ищу КБЖУ...")
-        items = await process_food_items(raw)
+        items = []
+        for item in raw:
+            try:
+                result = await get_nutrition(item["name"], float(item.get("grams", 100)))
+                items.append(result)
+            except Exception as e:
+                logger.error(f"get_nutrition error for {item}: {e}")
+        if not items:
+            await update.message.reply_text("Не смог найти КБЖУ. Попробуй ещё раз или уточни название.")
+            return
         save_pending("food_log", {"items": items}, update.message.message_id)
         await update.message.reply_text(fmt_food(items), parse_mode="Markdown")
 
-    # ── body_measurement ──
-    elif msg_type == "body_measurement":
-        save_pending("body_measurement", data, update.message.message_id)
-        await update.message.reply_text(fmt_measurement(data))
-
-    # ── expense ──
-    elif msg_type == "expense":
-        save_pending("expense", data, update.message.message_id)
-        await update.message.reply_text(fmt_expense(data))
-
-    # ── income ──
-    elif msg_type == "income":
-        save_pending("income", data, update.message.message_id)
-        await update.message.reply_text(fmt_income(data))
-
-    # ── workout ──
-    elif msg_type == "workout":
-        save_pending("workout", data, update.message.message_id)
-        await update.message.reply_text(fmt_workout(data))
-
-    # ── reminder ──
-    elif msg_type == "reminder":
-        save_pending("reminder", data, update.message.message_id)
-        await update.message.reply_text(fmt_reminder(data))
-
-    # ── daily_goals ──
-    elif msg_type == "daily_goals":
-        save_pending("daily_goals", data, update.message.message_id)
-        hw = data.get("has_workout", False)
+    elif msg_type == "add_product":
+        save_pending("add_product", data, update.message.message_id)
         await update.message.reply_text(
-            f"Посчитать цели на сегодня {'с тренировкой' if hw else 'без тренировки'}?\n\nПодтверждаешь?"
+            f"📦 *Добавить продукт в базу?*\n\n{data.get('name')}\n"
+            f"на 100г: {data.get('calories')} ккал | Б {data.get('protein')}г | Ж {data.get('fat')}г | У {data.get('carbs')}г\n\n"
+            f"Подтверждаешь?", parse_mode="Markdown"
         )
 
-    # ── habit_log ──
+    elif msg_type == "body_measurement":
+        save_pending("body_measurement", data, update.message.message_id)
+        await update.message.reply_text(fmt_measurement(data), parse_mode="Markdown")
+
+    elif msg_type == "expense":
+        save_pending("expense", data, update.message.message_id)
+        await update.message.reply_text(fmt_expense(data), parse_mode="Markdown")
+
+    elif msg_type == "income":
+        save_pending("income", data, update.message.message_id)
+        await update.message.reply_text(fmt_income(data), parse_mode="Markdown")
+
+    elif msg_type == "workout":
+        save_pending("workout", data, update.message.message_id)
+        await update.message.reply_text(fmt_workout(data), parse_mode="Markdown")
+
+    elif msg_type == "reminder":
+        save_pending("reminder", data, update.message.message_id)
+        await update.message.reply_text(fmt_reminder(data), parse_mode="Markdown")
+
+    elif msg_type == "daily_goals":
+        save_pending("daily_goals", data, update.message.message_id)
+        hw = data.get("has_workout", False) if isinstance(data, dict) else False
+        await update.message.reply_text(
+            f"Посчитать цели на сегодня {'с тренировкой 💪' if hw else 'без тренировки 🛋'}?\n\nПодтверждаешь?"
+        )
+
     elif msg_type == "habit_log":
         save_pending("habit_log", data, update.message.message_id)
         status = "✅" if data.get("done", True) else "❌"
         await update.message.reply_text(f"{status} Отметить привычку «{data['habit_name']}»?\n\nПодтверждаешь?")
 
-    # ── task ──
     elif msg_type == "task":
         save_pending("task", data, update.message.message_id)
         due = f" (до {data['due_date']})" if data.get("due_date") else ""
         await update.message.reply_text(f"📝 Добавить задачу?\n\n«{data['title']}»{due}\n\nПодтверждаешь?")
 
-    # ── goal ──
     elif msg_type == "goal":
         save_pending("goal", data, update.message.message_id)
         await update.message.reply_text(f"🎯 Записать цель?\n\n«{data['title']}»\n\nПодтверждаешь?")
 
-    # ── query_today ──
     elif msg_type == "query_today":
         await update.message.reply_text(get_today_stats(), parse_mode="Markdown")
 
-    # ── query_finances ──
+    elif msg_type == "query_workout":
+        await update.message.reply_text(get_workout_stats(), parse_mode="Markdown")
+
+    elif msg_type == "query_food":
+        await update.message.reply_text(get_food_stats_today(), parse_mode="Markdown")
+
     elif msg_type == "query_finances":
         period = data.get("period", "month") if isinstance(data, dict) else "month"
         await update.message.reply_text(get_finance_stats(period), parse_mode="Markdown")
 
-    # ── query_weight ──
     elif msg_type == "query_weight":
-        rows = supabase.table("body_measurements").select("date,weight,fat_percent,muscle_percent").order("date", desc=True).limit(10).execute().data or []
+        rows = supabase.table("body_measurements").select("date,weight,fat_percent,muscle_percent,bmr").order("date", desc=True).limit(10).execute().data or []
         if not rows:
             await update.message.reply_text("Нет замеров. Отправь скриншот умных весов!")
             return
@@ -611,15 +691,15 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             lines.append(f"\nИзменение: {diff:+} кг за {len(rows)} замеров")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-    # ── general_chat ──
     else:
+        # general_chat — GPT отвечает как ассистент со знанием контекста
         stats = get_today_stats()
-        prompt = f"""Ты персональный ИИ-ассистент. Отвечай кратко и по делу, на русском.
-Данные пользователя за сегодня:
-{stats}
-
-Сообщение: {text}"""
-        reply = await gemini_text(prompt)
+        reply = await gpt(
+            f"Ты личный ИИ-ассистент. Отвечай кратко, по делу, на русском языке.\n"
+            f"Данные пользователя за сегодня:\n{stats}\n\n"
+            f"Отвечай на вопрос прямо и конкретно. Если нет данных — скажи честно.",
+            text
+        )
         await update.message.reply_text(reply)
 
 # ── Handlers ─────────────────────────────────────────────────────────
@@ -644,24 +724,33 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Пробуем как весы
     try:
-        d = await analyze_scale_image(image_bytes)
+        raw = await gpt_vision(image_bytes,
+            "На изображении скриншот умных весов. Извлеки все показатели. "
+            "Верни ТОЛЬКО JSON: {\"weight\":null,\"bmi\":null,\"fat_percent\":null,\"muscle_percent\":null,"
+            "\"water_percent\":null,\"visceral_fat\":null,\"bmr\":null,\"fat_mass\":null,\"lean_mass\":null,\"bone_mass\":null}"
+        )
+        d = parse_json(raw)
         if d.get("weight"):
             save_pending("body_measurement", d, update.message.message_id)
-            await update.message.reply_text(fmt_measurement(d))
+            await update.message.reply_text(fmt_measurement(d), parse_mode="Markdown")
             return
     except Exception as e:
         logger.error(f"scale image: {e}")
 
     # Пробуем как этикетку
     try:
-        d = await analyze_label_image(image_bytes)
+        raw = await gpt_vision(image_bytes,
+            "На изображении этикетка продукта. Извлеки название, бренд и КБЖУ на 100г. "
+            "Верни ТОЛЬКО JSON: {\"name\":\"...\",\"brand\":null,\"calories\":0,\"protein\":0,\"fat\":0,\"carbs\":0}"
+        )
+        d = parse_json(raw)
         if d.get("name") and d.get("calories"):
             save_pending("add_product", d, update.message.message_id)
             brand = f" ({d['brand']})" if d.get("brand") else ""
             await update.message.reply_text(
-                f"📦 Нашёл продукт: {d['name']}{brand}\n"
+                f"📦 *{d['name']}{brand}*\n"
                 f"на 100г: {d['calories']} ккал | Б {d['protein']}г | Ж {d['fat']}г | У {d['carbs']}г\n\n"
-                f"Добавить в базу продуктов?\nПодтверждаешь?"
+                f"Добавить в базу продуктов?\nПодтверждаешь?", parse_mode="Markdown"
             )
             return
     except Exception as e:
@@ -673,42 +762,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_message(update, context, update.message.text.strip())
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Запоминаем chat_id если MY_CHAT_ID не задан
+    logger.info(f"Chat ID: {update.effective_chat.id}")
     await update.message.reply_text(
         "👋 Привет! Я твой личный ассистент.\n\n"
-        "Просто говори или пиши что происходит:\n\n"
+        "Просто говори что происходит:\n\n"
         "🍽 *Питание* — «съел сникерс» / «200г гречки и курица»\n"
-        "⚖️ *Замеры* — отправь скриншот умных весов\n"
+        "⚖️ *Замеры* — скриншот умных весов\n"
         "💪 *Тренировка* — «был в зале 1.5 часа»\n"
-        "💰 *Финансы* — «потратил 500 в Ашане» / «получил зарплату 80к»\n"
+        "💰 *Финансы* — «потратил 500 в Ашане» / «получил 80к»\n"
         "⏰ *Напоминания* — «напомни в среду в 9 поздравить брата»\n"
-        "✅ *Задачи* — «добавь задачу купить корм коту»\n"
-        "📊 *Статистика* — «что я съел сегодня» / «траты за неделю»\n\n"
-        "Каждый вечер в 21:00 буду присылать сводку дня 📋\n\n"
-        "Понимаю голосовые сообщения 🎙",
+        "✅ *Задачи* — «добавь задачу купить лекарства»\n"
+        "📊 *Статистика* — «что я съел» / «траты за неделю»\n\n"
+        "Понимаю голосовые 🎙",
         parse_mode="Markdown"
     )
 
 # ── Планировщик ───────────────────────────────────────────────────────
 
 async def check_reminders(bot: Bot):
-    """Проверяет напоминания каждую минуту"""
     now = now_local()
     rows = supabase.table("reminders").select("*").eq("is_sent", False).lte("remind_at", now.isoformat()).execute().data or []
     for r in rows:
         try:
-            if MY_CHAT_ID:
-                await bot.send_message(chat_id=MY_CHAT_ID, text=f"⏰ *Напоминание:*\n\n{r['text']}", parse_mode="Markdown")
+            chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
+            if chat_id:
+                await bot.send_message(chat_id=chat_id, text=f"⏰ *Напоминание:*\n\n{r['text']}", parse_mode="Markdown")
             supabase.table("reminders").update({"is_sent": True}).eq("id", r["id"]).execute()
         except Exception as e:
             logger.error(f"reminder send error: {e}")
 
 async def send_daily_summary(bot: Bot):
-    """Вечерняя сводка в 21:00"""
-    if not MY_CHAT_ID:
+    chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
+    if not chat_id:
         return
     try:
         summary = get_today_stats()
-        await bot.send_message(chat_id=MY_CHAT_ID, text=f"🌙 *Вечерняя сводка*\n\n{summary}", parse_mode="Markdown")
+        await bot.send_message(chat_id=chat_id, text=f"🌙 *Вечерняя сводка*\n\n{summary}", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"daily summary error: {e}")
 
@@ -721,13 +811,12 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Планировщик
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_job(check_reminders, "interval", minutes=1, args=[app.bot])
     scheduler.add_job(send_daily_summary, "cron", hour=21, minute=0, args=[app.bot])
     scheduler.start()
 
-    logger.info("Bot started with scheduler")
+    logger.info("Bot started")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
