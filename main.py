@@ -538,6 +538,16 @@ async def classify(text: str) -> dict:
 
 "query_weight" data: {{"from_date":null}}
 
+"delete_food_log" data: {{"date":"{today}","meal_type":null,"product_name":null}}
+• date: сегодня={today}, вчера={yesterday}
+• meal_type: "завтрак/обед/ужин/перекус" если указан, иначе null
+• product_name: конкретный продукт если указан, иначе null (удалить весь приём)
+• "удали последнюю запись" → date={today}, meal_type=null, product_name=null
+• "удали завтрак" → date={today}, meal_type="завтрак", product_name=null
+• "удали вчерашний ужин" → date={yesterday}, meal_type="ужин", product_name=null
+• "удали Red Bull из завтрака" → date={today}, meal_type="завтрак", product_name="Red Bull"
+• "удали курицу" → date={today}, meal_type=null, product_name="курица"
+
 "general_chat" data: {{}}
 • ТОЛЬКО если ничего выше не подходит (вопросы не про еду/здоровье/финансы)"""
 
@@ -786,6 +796,15 @@ async def save_action(pending: dict) -> str:
         result = "\n".join(saved_meals)
         result += f"\n\n📊 Итого: {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г"
         return result
+
+    if t == "delete_food_log":
+        ids = data.get("ids", [])
+        if not ids:
+            return "Нечего удалять."
+        for fid in ids:
+            supabase.table("food_log").delete().eq("id", fid).execute()
+        cal = data.get("total_cal", 0)
+        return f"🗑 Удалено {len(ids)} запис{'ь' if len(ids)==1 else 'и' if len(ids)<5 else 'ей'} ({round(cal)} ккал)"
 
     if t == "add_product":
         supabase.table("products").insert({
@@ -1523,6 +1542,41 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         if len(rows) >= 2:
             diff = round(rows[0]["weight"] - rows[-1]["weight"], 1)
             lines.append(f"\nИзменение: {diff:+} кг за {len(rows)} замеров")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    elif msg_type == "delete_food_log":
+        del_date     = data.get("date") or today_str()
+        del_meal     = data.get("meal_type")
+        del_product  = data.get("product_name")
+        td           = today_str()
+
+        # Формируем запрос
+        q = supabase.table("food_log").select("*").eq("date", del_date)
+        if del_meal:
+            q = q.eq("meal_type", del_meal)
+        if del_product:
+            q = q.ilike("product_name", f"%{del_product}%")
+        rows = q.execute().data or []
+
+        if not rows:
+            date_label = "вчера" if del_date != td else "сегодня"
+            meal_label = f" ({del_meal})" if del_meal else ""
+            prod_label = f" — {del_product}" if del_product else ""
+            await update.message.reply_text(f"Записей не найдено: {date_label}{meal_label}{prod_label}")
+            return
+
+        # Показываем что удалим и просим подтвердить
+        lines = ["🗑 *Удалить эти записи?*\n"]
+        for r in rows:
+            unit = r.get("unit", "г")
+            mt   = f"[{r.get('meal_type')}] " if r.get("meal_type") else ""
+            lines.append(f"• {mt}{r['product_name']}: {r['grams']}{unit} — {round(r.get('calories') or 0)} ккал")
+        total = round(sum(r.get("calories") or 0 for r in rows))
+        lines.append(f"\n*Итого: {total} ккал*")
+        lines.append("\n*«да»* — удаляю | *«нет»* — отмена")
+
+        ids = [r["id"] for r in rows]
+        save_pending("delete_food_log", {"ids": ids, "total_cal": total}, update.message.message_id)
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     else:
