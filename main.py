@@ -4,6 +4,8 @@ import base64
 import logging
 import tempfile
 import pytz
+import re
+from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 
@@ -80,6 +82,85 @@ CURRENCY_MAP = {
     "евро": "EUR", "€": "EUR",
 }
 
+PRODUCT_ALIAS_RULES = [
+    {
+        "needles": ["red bull zero", "ред бул zero", "редбул zero", "ред бул зеро", "редбул зеро", "redbull zero"],
+        "canonical": "Red Bull Zero",
+        "brand": "Red Bull",
+        "unit": "мл",
+        "default_amount": 250,
+        "category": "напиток",
+        "macros": {"calories": 3, "protein": 0, "fat": 0, "carbs": 0},
+    },
+    {
+        "needles": ["red bull watermelon", "ред бул арбуз", "редбул арбуз", "redbull watermelon"],
+        "canonical": "Red Bull Watermelon",
+        "brand": "Red Bull",
+        "unit": "мл",
+        "default_amount": 250,
+        "category": "напиток",
+        "macros": {"calories": 45, "protein": 0, "fat": 0, "carbs": 11},
+    },
+    {
+        "needles": ["red bull tropical", "ред бул тропик", "редбул тропик", "redbull tropical"],
+        "canonical": "Red Bull Tropical",
+        "brand": "Red Bull",
+        "unit": "мл",
+        "default_amount": 250,
+        "category": "напиток",
+        "macros": {"calories": 45, "protein": 0, "fat": 0, "carbs": 11},
+    },
+    {
+        "needles": ["red bull", "redbull", "ред бул", "редбул"],
+        "canonical": "Red Bull",
+        "brand": "Red Bull",
+        "unit": "мл",
+        "default_amount": 250,
+        "category": "напиток",
+        "macros": {"calories": 45, "protein": 0, "fat": 0, "carbs": 11},
+    },
+    {
+        "needles": ["армянский лаваш", "лаваш армянский", "лаваш кулиничи", "лаваш кулінічі", "лаваш куленич", "лаваш кулинич"],
+        "canonical": "Лаваш армянский",
+        "brand": "Кулиничі",
+        "unit": "г",
+        "category": "крупы",
+    },
+    {
+        "needles": ["куриная грудка", "грудка куриная", "курогрудь", "филе куриное", "куриное филе"],
+        "canonical": "Куриная грудка",
+        "unit": "г",
+        "category": "мясо",
+    },
+    {
+        "needles": ["гречка", "гречка вареная", "гречка варёная"],
+        "canonical": "Гречка варёная",
+        "unit": "г",
+        "category": "крупы",
+    },
+]
+
+STORE_ALIAS_RULES = [
+    {"needles": ["атб", "atb", "магаз атб", "магазин атб", "маркет атб"], "canonical": "АТБ", "category": "продукты"},
+    {"needles": ["сильпо", "silpo"], "canonical": "Сільпо", "category": "продукты"},
+    {"needles": ["новус", "novus"], "canonical": "Novus", "category": "продукты"},
+    {"needles": ["ашан", "auchan"], "canonical": "Ашан", "category": "продукты"},
+    {"needles": ["мак", "макдональдс", "mcdonalds", "mc donalds"], "canonical": "McDonald's", "category": "заведения"},
+]
+
+FINANCE_CATEGORY_ALIASES = {
+    "еда": "продукты",
+    "продукт": "продукты",
+    "продукты": "продукты",
+    "магазин": "продукты",
+    "кофе": "кофе",
+    "кафе": "заведения",
+    "ресторан": "заведения",
+    "такси": "транспорт",
+    "убер": "транспорт",
+    "bolt": "транспорт",
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def today_str():
@@ -141,6 +222,111 @@ def parse_json(text: str) -> dict:
             text = text[4:]
     return json.loads(text.strip())
 
+def norm_text(value: str | None) -> str:
+    """Нормализует пользовательские названия для поиска и алиасов."""
+    if not value:
+        return ""
+    text = value.lower().replace("ё", "е").replace("і", "и").replace("ї", "и")
+    text = re.sub(r"[^a-zа-я0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+def _contains_alias(text: str, needles: list[str]) -> bool:
+    ntext = norm_text(text)
+    return any(norm_text(needle) in ntext for needle in needles)
+
+def _extract_count_from_name(name: str) -> float | None:
+    n = norm_text(name)
+    match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:x|шт|штуки|банки|банка|банок)?\b", n)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+def to_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        match = re.search(r"\d+(?:[.,]\d+)?", str(value))
+        return float(match.group(0).replace(",", ".")) if match else default
+
+def product_alias_for(name: str) -> dict | None:
+    for rule in PRODUCT_ALIAS_RULES:
+        if _contains_alias(name, rule["needles"]):
+            return rule
+    return None
+
+def normalize_food_item(item: dict) -> dict:
+    """Приводит распознанный AI продукт к каноническому виду до поиска в БД."""
+    item = dict(item or {})
+    original_name = item.get("name") or item.get("product_name") or ""
+    rule = product_alias_for(original_name)
+    if not rule:
+        return item
+
+    item["original_name"] = original_name
+    item["name"] = rule["canonical"]
+    if not item.get("brand") and rule.get("brand"):
+        item["brand"] = rule["brand"]
+    item["unit"] = rule.get("unit", item.get("unit", "г"))
+    item["category"] = rule.get("category", item.get("category"))
+
+    raw_grams = item.get("grams")
+    count = _extract_count_from_name(original_name)
+    raw_amount = to_float(raw_grams)
+    if raw_grams is None or raw_amount in (0, 1, 100) or (rule.get("unit") == "мл" and 1 < raw_amount <= 5):
+        default_amount = float(rule.get("default_amount") or 100)
+        item["grams"] = default_amount * (count or (raw_amount if 1 < raw_amount <= 5 else 1))
+
+    macros = rule.get("macros")
+    if macros and item.get("cal100") is None:
+        item["cal100"] = macros["calories"]
+        item["pro100"] = macros["protein"]
+        item["fat100"] = macros["fat"]
+        item["carb100"] = macros["carbs"]
+
+    return item
+
+def normalize_store_name(value: str | None, allow_raw: bool = True) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    for rule in STORE_ALIAS_RULES:
+        if _contains_alias(value, rule["needles"]):
+            return rule["canonical"], rule.get("category")
+    if not allow_raw:
+        return None, None
+    cleaned = value.strip()
+    return cleaned or None, None
+
+def normalize_finance_data(data: dict, source_text: str = "") -> dict:
+    data = dict(data or {})
+    haystack = " ".join(str(x or "") for x in [source_text, data.get("store_name"), data.get("description"), data.get("category")])
+
+    store_name, store_category = normalize_store_name(haystack, allow_raw=False)
+    if not store_name and data.get("store_name"):
+        store_name, store_category = normalize_store_name(data.get("store_name"), allow_raw=True)
+    if store_name:
+        data["store_name"] = store_name
+        if store_category and not data.get("category"):
+            data["category"] = store_category
+
+    category = norm_text(data.get("category"))
+    for needle, canonical in FINANCE_CATEGORY_ALIASES.items():
+        if needle in category or needle in norm_text(haystack):
+            data["category"] = canonical
+            break
+
+    if not data.get("currency"):
+        for key, currency in CURRENCY_MAP.items():
+            if key in haystack.lower():
+                data["currency"] = currency
+                break
+    data.setdefault("currency", "UAH")
+    return data
+
 # ── AI calls ─────────────────────────────────────────────────────────
 
 async def transcribe_voice(file_path: str) -> str:
@@ -184,17 +370,70 @@ async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
 
 # ── Поиск КБЖУ ───────────────────────────────────────────────────────
 
-def find_in_db(product_name: str, brand: str = None) -> dict | None:
-    """Ищет продукт в Supabase по названию (и бренду если есть)."""
-    # Поиск по имени + бренду
+def _product_score(query: str, product: dict, brand: str = None) -> float:
+    q = norm_text(query)
+    name = norm_text(product.get("name"))
+    p_brand = norm_text(product.get("brand"))
+    if not q or not name:
+        return 0
+
+    score = SequenceMatcher(None, q, name).ratio()
+    q_words = set(q.split())
+    n_words = set(name.split())
+    if q == name:
+        score = 1.0
+    elif q in name or name in q:
+        score = max(score, 0.92)
+    elif q_words and q_words.issubset(n_words):
+        score = max(score, 0.88)
+    elif q_words & n_words:
+        overlap = len(q_words & n_words) / max(len(q_words), 1)
+        score = max(score, 0.62 + overlap * 0.25)
+
     if brand:
-        rows = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(10).execute().data or []
-        for p in rows:
-            if p.get("brand") and brand.lower() in (p["brand"] or "").lower():
-                return p
-    # Только по имени
-    r = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
-    return r.data[0] if r.data else None
+        b = norm_text(brand)
+        if b and (b in p_brand or p_brand in b):
+            score += 0.08
+        elif b and p_brand:
+            score -= 0.08
+    return min(score, 1.0)
+
+def find_in_db(product_name: str, brand: str = None) -> dict | None:
+    """Ищет продукт в Supabase: алиасы → точный поиск → fuzzy по локальному списку."""
+    alias = product_alias_for(product_name)
+    if alias:
+        product_name = alias["canonical"]
+        brand = brand or alias.get("brand")
+
+    candidates: list[dict] = []
+    for query_name in [product_name, " ".join(reversed(norm_text(product_name).split()))]:
+        if not query_name:
+            continue
+        try:
+            rows = supabase.table("products").select("*").ilike("name", f"%{query_name}%").limit(20).execute().data or []
+            candidates.extend(rows)
+        except Exception as e:
+            logger.warning(f"product direct lookup failed for {query_name}: {e}")
+
+    if not candidates:
+        try:
+            candidates = supabase.table("products").select("*").limit(500).execute().data or []
+        except Exception as e:
+            logger.warning(f"product fuzzy preload failed: {e}")
+            candidates = []
+
+    seen = {}
+    for row in candidates:
+        if row.get("id"):
+            seen[row["id"]] = row
+    scored = sorted(
+        ((_product_score(product_name, row, brand), row) for row in seen.values()),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    if scored and scored[0][0] >= 0.72:
+        return scored[0][1]
+    return None
 
 def infer_category(name: str, unit: str = "г") -> str:
     """Определяет категорию продукта по единице измерения и имени."""
@@ -318,6 +557,34 @@ async def get_nutrition(product_name: str, grams: float, brand: str = None, unit
     Полный поиск КБЖУ: база → интернет (Tavily) → GPT-оценка.
     Найденные данные сохраняет в базу для следующего раза.
     """
+    normalized = normalize_food_item({"name": product_name, "grams": grams, "brand": brand, "unit": unit})
+    product_name = normalized.get("name", product_name)
+    brand = normalized.get("brand") or brand
+    unit = normalized.get("unit", unit)
+    grams = to_float(normalized.get("grams", grams), to_float(grams, 100))
+
+    if normalized.get("cal100") is not None:
+        cal100 = to_float(normalized.get("cal100"))
+        pro100 = to_float(normalized.get("pro100"))
+        fat100 = to_float(normalized.get("fat100"))
+        carb100 = to_float(normalized.get("carb100"))
+        ratio = grams / 100
+        existing = find_in_db(product_name, brand)
+        pid = existing["id"] if existing else save_product_to_db(
+            product_name, brand, cal100, pro100, fat100, carb100,
+            category=normalized.get("category"), unit=unit, source="built_in_alias"
+        )
+        return {
+            "product_name": product_name, "grams": grams, "unit": unit, "brand": brand,
+            "category": normalized.get("category") or infer_category(product_name, unit),
+            "calories": round(cal100 * ratio, 1),
+            "protein": round(pro100 * ratio, 1),
+            "fat": round(fat100 * ratio, 1),
+            "carbs": round(carb100 * ratio, 1),
+            "cal100": cal100, "pro100": pro100, "fat100": fat100, "carb100": carb100,
+            "product_id": pid, "auto_estimated": False,
+        }
+
     # 1. Supabase
     p = find_in_db(product_name, brand)
     if p:
@@ -376,17 +643,18 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
     3. auto_search=True → Tavily + GPT (для meal_session)
     4. auto_search=False → возвращаем {"not_found": True, ...} (для food_log, чтобы спросить пользователя)
     """
+    item = normalize_food_item(item)
     name  = item.get("name", "")
     unit  = item.get("unit", "г")
     brand = item.get("brand") or None
 
     # Если граммы не указаны — проверяем default_grams в базе
     raw_grams = item.get("grams")
-    if raw_grams is None or float(raw_grams) == 100:
+    if raw_grams is None or to_float(raw_grams) == 100:
         _db_check = find_in_db(name, brand)
         if _db_check and _db_check.get("default_grams"):
-            raw_grams = float(_db_check["default_grams"])
-    grams = float(raw_grams) if raw_grams is not None else 100.0
+            raw_grams = to_float(_db_check["default_grams"])
+    grams = to_float(raw_grams, 100.0) if raw_grams is not None else 100.0
 
     # Восстанавливаем cal100 из макросов если не указан явно
     pro100  = item.get("pro100")
@@ -491,6 +759,11 @@ cal100/pro100/fat100/carb100 — заполни если пользовател�
 brand — заполни если упомянут бренд/марка
 unit: "мл" для НАПИТКОВ, "г" для еды
 grams: если не указаны — оцени (яблоко ≈ 150г, сникерс ≈ 55г, стакан воды ≈ 250мл)
+Понимай бытовые синонимы:
+- "банка", "одна банка" для энергетика = 250мл
+- "армянский лаваш", "лаваш армянский", "лаваш Кулиничі/Кулиничи/куленич" = name:"Лаваш армянский", brand:"Кулиничі"
+- "курогрудь", "куриная грудка", "куриное филе" = name:"Куриная грудка"
+- "гречка" без уточнения обычно = name:"Гречка варёная"
 ВАЖНО — Red Bull всегда 250мл за банку:
 "выпил Red Bull" / "выпил Red Bull Zero" → grams=250, unit="мл", name="Red Bull Zero"
 "выпил Red Bull арбуз" / "выпил Red Bull Watermelon" → grams=250, unit="мл", name="Red Bull Watermelon"
@@ -526,6 +799,12 @@ data: {{"duration_minutes":число или null, "location":"зал/улица
 "expense" — трата денег
 data: {{"amount":число, "currency":"RUB/UAH/USD/EUR", "category":"еда/кофе/транспорт/...", "description":"...", "store_name":null или "название магазина"}}
 Определяй валюту: гривен/грн/₴=UAH, рублей/руб/₽=RUB, долларов/$=USD, евро/€=EUR
+Нормализуй магазины и категории:
+- "ATB", "атб", "магаз ATB", "магазин атб" → store_name:"АТБ", category:"продукты"
+- "Сильпо/silpo" → store_name:"Сільпо", category:"продукты"
+- "Novus/новус" → store_name:"Novus", category:"продукты"
+- "McDonald's/мак/макдональдс" → store_name:"McDonald's", category:"заведения"
+- "потратил 430 в атб" без категории → category:"продукты"
 
 "income" — получил деньги
 data: {{"amount":число, "currency":"RUB", "category":"зарплата/фриланс/...", "description":"..."}}
@@ -563,16 +842,18 @@ data: {{"date":null, "from_date":null, "to_date":null, "meal_type":null}}
 "что я ел на завтрак" → date={now.strftime('%Y-%m-%d')}, meal_type:"завтрак"
 "что я ел на ужин в пятницу" → date=ближайшая прошлая пятница, meal_type:"ужин"
 "что я ел на этой неделе" → from_date=начало недели, to_date={now.strftime('%Y-%m-%d')}
+"сколько калорий за прошлую неделю" → from_date={(now - timedelta(days=now.weekday()+7)).strftime('%Y-%m-%d')}, to_date={(now - timedelta(days=now.weekday()+1)).strftime('%Y-%m-%d')}
 "сколько калорий я набрал вчера" → date={yesterday}
 
 "query_workout" — вопрос о тренировках
 data: {{"date":"{now.strftime('%Y-%m-%d')}"}}
 
 "query_finances" — вопрос о деньгах/доходах/расходах за период
-data: {{"from_date":"YYYY-MM-DD", "to_date":"YYYY-MM-DD", "subtype":"all/income/expense"}}
+data: {{"from_date":"YYYY-MM-DD", "to_date":"YYYY-MM-DD", "subtype":"all/income/expense", "store_name":null}}
 Примеры:
 "сколько я заработал вчера" → from_date=вчера, to_date=вчера, subtype:"income"
 "сколько я потратил за неделю" → from_date=начало недели, to_date=сегодня, subtype:"expense"
+"сколько потратил в ATB на прошлой неделе" → from_date={(now - timedelta(days=now.weekday()+7)).strftime('%Y-%m-%d')}, to_date={(now - timedelta(days=now.weekday()+1)).strftime('%Y-%m-%d')}, subtype:"expense", store_name:"АТБ"
 "какие расходы вчера" → from_date=вчера, to_date=вчера, subtype:"expense"
 "мои доходы за месяц" → from_date=начало месяца, to_date=сегодня, subtype:"income"
 Начало этой недели: {(now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')}
@@ -834,6 +1115,7 @@ async def save_action(pending: dict) -> str:
         return "✅ Замер сохранён!"
 
     if t == "expense":
+        data = normalize_finance_data(data)
         if data.get("store_name"):
             ex = supabase.table("stores").select("id").ilike("name", data["store_name"]).limit(1).execute()
             if ex.data:
@@ -846,6 +1128,7 @@ async def save_action(pending: dict) -> str:
         return f"✅ Расход: -{data['amount']} {data.get('currency','RUB')}"
 
     if t == "income":
+        data = normalize_finance_data(data)
         data["date"] = td; data["type"] = "income"
         supabase.table("finances").insert(data).execute()
         return f"✅ Доход: +{data['amount']} {data.get('currency','RUB')}"
@@ -1476,10 +1759,12 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(fmt_measurement(data), parse_mode="Markdown")
 
     elif msg_type == "expense":
+        data = normalize_finance_data(data, text)
         save_pending("expense", data, update.message.message_id)
         await update.message.reply_text(fmt_expense(data), parse_mode="Markdown")
 
     elif msg_type == "income":
+        data = normalize_finance_data(data, text)
         save_pending("income", data, update.message.message_id)
         await update.message.reply_text(fmt_income(data), parse_mode="Markdown")
 
@@ -1536,11 +1821,12 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         from_date = d.get("from_date", today_str())
         to_date   = d.get("to_date",   today_str())
         subtype   = d.get("subtype", "all")
+        store_name = d.get("store_name")
         if d.get("period") == "week":
             from_date = (date.today() - timedelta(days=date.today().weekday())).isoformat()
         elif d.get("period") == "month":
             from_date = date.today().replace(day=1).isoformat()
-        await update.message.reply_text(get_finance_history(from_date, to_date, subtype), parse_mode="Markdown")
+        await update.message.reply_text(get_finance_history(from_date, to_date, subtype, store_name), parse_mode="Markdown")
 
     elif msg_type == "query_weight":
         rows = supabase.table("body_measurements").select("date,weight,fat_percent,muscle_percent,bmr").order("date", desc=True).limit(10).execute().data or []
@@ -1804,7 +2090,7 @@ def get_food_period(from_date: str, to_date: str) -> str:
              f"В среднем/день: {round(total_cal/n_days)} ккал | Б {round(total_p/n_days)}г | Ж {round(total_f/n_days)}г | У {round(total_c/n_days)}г"]
     return "\n".join(lines)
 
-def get_finance_history(from_date: str, to_date: str, subtype: str = "all") -> str:
+def get_finance_history(from_date: str, to_date: str, subtype: str = "all", store_name: str = None) -> str:
     """Финансы за период с фильтром по типу (income/expense/all)."""
     fin = supabase.table("finances").select("*") \
         .gte("date", from_date).lte("date", to_date).execute().data or []
@@ -1812,6 +2098,9 @@ def get_finance_history(from_date: str, to_date: str, subtype: str = "all") -> s
         fin = [r for r in fin if r["type"] == "income"]
     elif subtype == "expense":
         fin = [r for r in fin if r["type"] == "expense"]
+    canonical_store, _ = normalize_store_name(store_name)
+    if canonical_store:
+        fin = [r for r in fin if norm_text(r.get("store_name")) == norm_text(canonical_store)]
 
     try:
         from datetime import datetime as _dt
@@ -1823,13 +2112,15 @@ def get_finance_history(from_date: str, to_date: str, subtype: str = "all") -> s
 
     if not fin:
         sub_label = {"income": "доходов", "expense": "расходов"}.get(subtype, "транзакций")
-        return f"За {period_label} нет {sub_label}."
+        store_label = f" в {canonical_store}" if canonical_store else ""
+        return f"За {period_label}{store_label} нет {sub_label}."
 
     income  = sum(r["amount"] for r in fin if r["type"] == "income")
     expense = sum(r["amount"] for r in fin if r["type"] == "expense")
     cur     = fin[0].get("currency", "UAH")
 
-    lines = [f"💰 *Финансы за {period_label}*\n"]
+    store_label = f" — {canonical_store}" if canonical_store else ""
+    lines = [f"💰 *Финансы за {period_label}{store_label}*\n"]
     if subtype in ("all", "income") and income:
         lines.append(f"Доходы: +{income} {cur}")
         for r in [x for x in fin if x["type"] == "income"]:
