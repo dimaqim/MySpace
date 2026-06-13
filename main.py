@@ -182,12 +182,49 @@ def find_in_db(product_name: str, brand: str = None) -> dict | None:
     r = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
     return r.data[0] if r.data else None
 
+def infer_category(name: str, unit: str = "г") -> str:
+    """Определяет категорию продукта по единице измерения и имени."""
+    if unit == "мл":
+        return "напиток"
+    drink_keywords = ["сок", "juice", "cola", "кола", "вода", "water", "milk", "молоко",
+                      "кефир", "ряженка", "смузи", "энергетик", "red bull", "monster",
+                      "чай", "tea", "кофе", "coffee", "лимонад", "компот", "морс"]
+    name_l = name.lower()
+    if any(k in name_l for k in drink_keywords):
+        return "напиток"
+    meat_kw = ["курица", "грудка", "говядина", "свинина", "индейка", "рыба", "тунец", "salmon", "лосось"]
+    if any(k in name_l for k in meat_kw):
+        return "мясо"
+    grain_kw = ["гречка", "рис", "овсянка", "паста", "макарон", "лаваш", "хлеб", "батон", "булка"]
+    if any(k in name_l for k in grain_kw):
+        return "крупы"
+    veg_kw = ["помидор", "огурец", "капуста", "морковь", "перец", "лук", "салат", "томат"]
+    if any(k in name_l for k in veg_kw):
+        return "овощи"
+    fruit_kw = ["яблок", "банан", "апельсин", "груша", "виноград", "клубника", "черника"]
+    if any(k in name_l for k in fruit_kw):
+        return "фрукты"
+    dairy_kw = ["творог", "йогурт", "сыр", "кефир", "ряженка", "молоко", "сметана"]
+    if any(k in name_l for k in dairy_kw):
+        return "молочные"
+    sweet_kw = ["шоколад", "конфет", "торт", "пирог", "сникерс", "kit kat", "lion", "mars", "twix", "bounty"]
+    if any(k in name_l for k in sweet_kw):
+        return "сладости"
+    return "еда"
+
 def save_product_to_db(name: str, brand: str | None, cal100: float,
-                       pro100: float, fat100: float, carb100: float) -> str | None:
+                       pro100: float, fat100: float, carb100: float,
+                       category: str = None, unit: str = "г",
+                       source: str = None) -> str | None:
     """Сохраняет продукт в Supabase, возвращает id."""
-    row = {"name": name, "calories": cal100, "protein": pro100, "fat": fat100, "carbs": carb100}
-    if brand:
-        row["brand"] = brand
+    cat = category or infer_category(name, unit)
+    row = {
+        "name": name, "calories": cal100, "protein": pro100,
+        "fat": fat100, "carbs": carb100,
+        "category": cat, "default_unit": unit,
+    }
+    if brand:       row["brand"] = brand
+    if source:      row["data_source"] = source
     res = supabase.table("products").insert(row).execute()
     return res.data[0]["id"] if res.data else None
 
@@ -270,9 +307,12 @@ async def get_nutrition(product_name: str, grams: float, brand: str = None, unit
     # 1. Supabase
     p = find_in_db(product_name, brand)
     if p:
+        # Используем default_unit из базы если unit не переопределён
+        eff_unit = unit if unit != "г" else (p.get("default_unit") or unit)
         ratio = grams / 100
         return {
-            "product_name": product_name, "grams": grams, "unit": unit,
+            "product_name": product_name, "grams": grams, "unit": eff_unit,
+            "category": p.get("category") or infer_category(product_name, eff_unit),
             "calories": round(p["calories"] * ratio, 1),
             "protein":  round(p["protein"]  * ratio, 1),
             "fat":      round(p["fat"]       * ratio, 1),
@@ -298,11 +338,13 @@ async def get_nutrition(product_name: str, grams: float, brand: str = None, unit
         macros["auto_estimated"] = False
 
     # Сохраняем в базу для будущих запросов
-    pid = save_product_to_db(product_name, brand, macros["calories"], macros["protein"], macros["fat"], macros["carbs"])
+    cat = infer_category(product_name, unit)
+    pid = save_product_to_db(product_name, brand, macros["calories"], macros["protein"],
+                             macros["fat"], macros["carbs"], category=cat, unit=unit)
 
     ratio = grams / 100
     return {
-        "product_name": product_name, "grams": grams, "unit": unit,
+        "product_name": product_name, "grams": grams, "unit": unit, "category": cat,
         "calories": round(macros["calories"] * ratio, 1),
         "protein":  round(macros["protein"]  * ratio, 1),
         "fat":      round(macros["fat"]       * ratio, 1),
@@ -335,14 +377,17 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
 
     # Пользователь указал КБЖУ на 100г — сохраняем в базу и считаем
     if cal100 is not None:
+        cat      = infer_category(name, unit)
         existing = find_in_db(name, brand)
         if existing:
             pid = existing["id"]
+            cat = existing.get("category") or cat
         else:
-            pid = save_product_to_db(name, brand, cal100, pro100 or 0, fat100 or 0, carb100 or 0)
+            pid = save_product_to_db(name, brand, cal100, pro100 or 0, fat100 or 0, carb100 or 0,
+                                     category=cat, unit=unit)
         ratio = grams / 100
         return {
-            "product_name": name, "grams": grams, "unit": unit, "brand": brand,
+            "product_name": name, "grams": grams, "unit": unit, "brand": brand, "category": cat,
             "calories": round(cal100 * ratio, 1),
             "protein":  round((pro100 or 0) * ratio, 1),
             "fat":      round((fat100 or 0) * ratio, 1),
@@ -354,10 +399,12 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
     # Проверяем базу данных
     p = find_in_db(name, brand)
     if p:
-        ratio = grams / 100
+        ratio         = grams / 100
         brand_display = p.get("brand") or brand
+        eff_unit      = unit if unit != "г" else (p.get("default_unit") or unit)
+        cat           = p.get("category") or infer_category(name, eff_unit)
         return {
-            "product_name": name, "grams": grams, "unit": unit, "brand": brand_display,
+            "product_name": name, "grams": grams, "unit": eff_unit, "brand": brand_display, "category": cat,
             "calories": round(p["calories"] * ratio, 1),
             "protein":  round(p["protein"]  * ratio, 1),
             "fat":      round(p["fat"]       * ratio, 1),
@@ -512,6 +559,30 @@ data: {{"from_date":null}}
 
 # ── Форматирование ────────────────────────────────────────────────────
 
+def _split_food_drink(items: list) -> tuple[list, list]:
+    """Разделяет список продуктов на еду и напитки."""
+    food   = [it for it in items if (it.get("category") or infer_category(it.get("product_name",""), it.get("unit","г"))) == "напиток"]
+    drinks = [it for it in items if it not in food]
+    # food = еда, drinks = напитки (переименуем правильно)
+    return (
+        [it for it in items if (it.get("category") or infer_category(it.get("product_name",""), it.get("unit","г"))) != "напиток"],
+        [it for it in items if (it.get("category") or infer_category(it.get("product_name",""), it.get("unit","г"))) == "напиток"],
+    )
+
+def fmt_items_section(items: list, emoji: str, label: str) -> list[str]:
+    lines = [f"{emoji} *{label}:*"]
+    for it in items:
+        est  = " _(ИИ)_" if it.get("auto_estimated") else ""
+        unit = it.get("unit", "г")
+        cal  = round(it.get("calories") or 0)
+        lines.append(f"  • {it['product_name']}: {it['grams']}{unit} — {cal} ккал{est}")
+    cal_s = round(sum(it.get("calories") or 0 for it in items))
+    p_s   = round(sum(it.get("protein")  or 0 for it in items))
+    f_s   = round(sum(it.get("fat")      or 0 for it in items))
+    c_s   = round(sum(it.get("carbs")    or 0 for it in items))
+    lines.append(f"  → {cal_s} ккал | Б {p_s}г | Ж {f_s}г | У {c_s}г")
+    return lines
+
 def fmt_food(items: list, log_date: str = None, meal_type: str = None) -> str:
     td = today_str()
     date_label = ""
@@ -524,15 +595,19 @@ def fmt_food(items: list, log_date: str = None, meal_type: str = None) -> str:
             date_label = f" за {log_date}"
     meal_label = f" ({meal_type})" if meal_type else ""
     lines = [f"📝 *Записать{meal_label}{date_label}?*\n"]
-    for it in items:
-        est  = " _(оценка ИИ)_" if it.get("auto_estimated") else ""
-        unit = it.get("unit", "г")
-        lines.append(f"• {it['product_name']}: {it['grams']} {unit} — {round(it.get('calories') or 0)} ккал{est}")
-    total_cal = sum(it.get("calories") or 0 for it in items)
-    total_p   = sum(it.get("protein")  or 0 for it in items)
-    total_f   = sum(it.get("fat")      or 0 for it in items)
-    total_c   = sum(it.get("carbs")    or 0 for it in items)
-    lines.append(f"\n📊 {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+
+    food_items, drink_items = _split_food_drink(items)
+    if food_items:
+        lines += fmt_items_section(food_items, "🍽", "Еда")
+    if drink_items:
+        if food_items: lines.append("")
+        lines += fmt_items_section(drink_items, "🥤", "Напитки")
+
+    total_cal = round(sum(it.get("calories") or 0 for it in items))
+    total_p   = round(sum(it.get("protein")  or 0 for it in items))
+    total_f   = round(sum(it.get("fat")      or 0 for it in items))
+    total_c   = round(sum(it.get("carbs")    or 0 for it in items))
+    lines.append(f"\n📊 *Итого:* {total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
     lines.append("\nПодтверждаешь?")
     return "\n".join(lines)
 
@@ -591,15 +666,16 @@ def fmt_meal_session(data: dict) -> str:
             date_label = f" — {log_date}"
 
     lines = [f"🍽 *{meal_type.capitalize()}{date_label}*\n"]
-    for it in items:
-        cal  = round(it.get("calories") or 0)
-        src  = " _(ИИ)_" if it.get("auto_estimated") else ""
-        unit = it.get("unit", "г")
-        lines.append(f"• {it['product_name']}: {it['grams']}{unit} — {cal} ккал{src}")
-        lines.append(f"  Б {round(it.get('protein') or 0)}г | Ж {round(it.get('fat') or 0)}г | У {round(it.get('carbs') or 0)}г")
-    lines.append(f"\n📊 *Итого:*")
-    lines.append(f"{round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
-    lines.append("\nЭто всё на этот приём пищи или добавишь ещё что-то?")
+
+    food_items, drink_items = _split_food_drink(items)
+    if food_items:
+        lines += fmt_items_section(food_items, "🍽", "Еда")
+    if drink_items:
+        if food_items: lines.append("")
+        lines += fmt_items_section(drink_items, "🥤", "Напитки")
+
+    lines.append(f"\n📊 *Итого:* {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+    lines.append("\nЭто всё или добавишь ещё?")
     lines.append("_(«да» — записываю / «нет» — жду ещё продукты)_")
     return "\n".join(lines)
 
@@ -768,9 +844,14 @@ def get_today_stats() -> str:
         remaining = cal_goal - round(total_cal)
         lines.append(f"🍽 *Питание:* {round(total_cal)}/{cal_goal} ккал (осталось {remaining})")
         lines.append(f"   Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
-        for r in food:
+        food_rows  = [r for r in food if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) != "напиток"]
+        drink_rows = [r for r in food if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) == "напиток"]
+        for r in food_rows:
             unit = r.get("unit", "г")
-            lines.append(f"   • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+            lines.append(f"   🍽 {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+        for r in drink_rows:
+            unit = r.get("unit", "мл")
+            lines.append(f"   🥤 {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
     else:
         lines.append("🍽 Питание: ничего не записано")
 
@@ -877,11 +958,23 @@ def get_food_stats_today() -> str:
     total_c   = round(sum(r.get("carbs")    or 0 for r in food))
     remaining = cal_goal - total_cal
 
-    lines = ["🍽 *Сегодня съел:*\n"]
-    for r in food:
-        unit = r.get("unit", "г")
-        lines.append(f"• {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
-    lines.append(f"\n📊 Итого: {total_cal} ккал из {cal_goal}")
+    food_rows  = [r for r in food if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) != "напиток"]
+    drink_rows = [r for r in food if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) == "напиток"]
+
+    lines = ["🍽 *Сегодня:*\n"]
+    if food_rows:
+        lines.append("🍽 *Еда:*")
+        for r in food_rows:
+            unit = r.get("unit", "г")
+            lines.append(f"  • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+    if drink_rows:
+        if food_rows: lines.append("")
+        lines.append("🥤 *Напитки:*")
+        for r in drink_rows:
+            unit = r.get("unit", "мл")
+            lines.append(f"  • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+
+    lines.append(f"\n📊 *Итого:* {total_cal} ккал из {cal_goal}")
     lines.append(f"Б {total_p}г | Ж {total_f}г | У {total_c}г")
     if remaining > 0:
         lines.append(f"Осталось: {remaining} ккал")
@@ -1485,6 +1578,41 @@ async def send_morning_message(bot: Bot):
         "status": "pending",
     }).execute()
 
+def _fmt_food_drink_day(rows: list, header: str) -> str:
+    """Форматирует список продуктов дня с разделением еда/напитки."""
+    if not rows:
+        return f"{header}\nНичего не записано."
+
+    food_rows  = [r for r in rows if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) != "напиток"]
+    drink_rows = [r for r in rows if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) == "напиток"]
+
+    lines = [header, ""]
+    if food_rows:
+        lines.append("🍽 *Еда:*")
+        for r in food_rows:
+            unit = r.get("unit", "г")
+            lines.append(f"  • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+        fc = round(sum(r.get("calories") or 0 for r in food_rows))
+        fp = round(sum(r.get("protein")  or 0 for r in food_rows))
+        ff = round(sum(r.get("fat")      or 0 for r in food_rows))
+        fcarb = round(sum(r.get("carbs") or 0 for r in food_rows))
+        lines.append(f"  → {fc} ккал | Б {fp}г | Ж {ff}г | У {fcarb}г")
+    if drink_rows:
+        if food_rows: lines.append("")
+        lines.append("🥤 *Напитки:*")
+        for r in drink_rows:
+            unit = r.get("unit", "мл")
+            lines.append(f"  • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+        dc = round(sum(r.get("calories") or 0 for r in drink_rows))
+        lines.append(f"  → {dc} ккал")
+
+    total_cal = round(sum(r.get("calories") or 0 for r in rows))
+    total_p   = round(sum(r.get("protein")  or 0 for r in rows))
+    total_f   = round(sum(r.get("fat")      or 0 for r in rows))
+    total_c   = round(sum(r.get("carbs")    or 0 for r in rows))
+    lines.append(f"\n📊 *Итого:* {total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
+    return "\n".join(lines)
+
 def get_food_history(query_date: str, meal_type: str = None) -> str:
     """Питание за конкретный день (с фильтром по приёму пищи)."""
     food = supabase.table("food_log").select("*").eq("date", query_date).execute().data or []
@@ -1497,36 +1625,38 @@ def get_food_history(query_date: str, meal_type: str = None) -> str:
     except:
         d_label = query_date
 
-    if not food:
-        mt_label = f" на {meal_type}" if meal_type else ""
-        return f"За {d_label}{mt_label} ничего не записано."
-
-    total_cal = round(sum(r.get("calories") or 0 for r in food))
-    total_p   = round(sum(r.get("protein")  or 0 for r in food))
-    total_f   = round(sum(r.get("fat")      or 0 for r in food))
-    total_c   = round(sum(r.get("carbs")    or 0 for r in food))
-
     mt_label = f" — {meal_type}" if meal_type else ""
-    lines = [f"🍽 *Питание за {d_label}{mt_label}:*\n"]
+    header = f"🍽 *Питание за {d_label}{mt_label}*"
 
-    # Группируем по приёму пищи
-    by_meal: dict = {}
-    for r in food:
-        mt = r.get("meal_type") or "прочее"
-        by_meal.setdefault(mt, []).append(r)
-
-    for mt, items in by_meal.items():
-        if not meal_type:
+    if not meal_type:
+        # Группируем по приёму пищи
+        by_meal: dict = {}
+        for r in food:
+            mt = r.get("meal_type") or "прочее"
+            by_meal.setdefault(mt, []).append(r)
+        if not food:
+            return f"{header}\nНичего не записано."
+        lines = [header, ""]
+        for mt, items in by_meal.items():
             lines.append(f"*{mt.capitalize()}:*")
-        for r in items:
-            unit = r.get("unit", "г")
-            lines.append(f"  • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
-        sub_cal = round(sum(r.get("calories") or 0 for r in items))
-        if not meal_type:
-            lines.append(f"  → {sub_cal} ккал\n")
+            food_i  = [r for r in items if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) != "напиток"]
+            drink_i = [r for r in items if (r.get("category") or infer_category(r.get("product_name",""), r.get("unit","г"))) == "напиток"]
+            for r in food_i:
+                unit = r.get("unit", "г")
+                lines.append(f"  🍽 {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+            for r in drink_i:
+                unit = r.get("unit", "мл")
+                lines.append(f"  🥤 {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+            sub = round(sum(r.get("calories") or 0 for r in items))
+            lines.append(f"  → {sub} ккал\n")
+        total_cal = round(sum(r.get("calories") or 0 for r in food))
+        total_p   = round(sum(r.get("protein")  or 0 for r in food))
+        total_f   = round(sum(r.get("fat")      or 0 for r in food))
+        total_c   = round(sum(r.get("carbs")    or 0 for r in food))
+        lines.append(f"📊 *Итого за день:* {total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
+        return "\n".join(lines)
 
-    lines.append(f"📊 *Итого:* {total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
-    return "\n".join(lines)
+    return _fmt_food_drink_day(food, header)
 
 def get_food_period(from_date: str, to_date: str) -> str:
     """Питание за период."""
