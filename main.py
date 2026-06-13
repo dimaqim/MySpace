@@ -379,11 +379,12 @@ async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
 async def classify(text: str) -> dict:
     now = now_local()
     # Вычисляем полезные даты
-    weekday = now.weekday()  # 0=пн, 6=вс
+    weekday        = now.weekday()  # 0=пн, 6=вс
     days_to_sunday = 6 - weekday
-    end_of_week = (now + timedelta(days=days_to_sunday)).strftime("%Y-%m-%d")
-    next_monday  = (now + timedelta(days=7 - weekday)).strftime("%Y-%m-%d")
-    tomorrow     = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday      = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    tomorrow       = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_of_week    = (now + timedelta(days=days_to_sunday)).strftime("%Y-%m-%d")
+    next_monday    = (now + timedelta(days=7 - weekday)).strftime("%Y-%m-%d")
 
     system = f"""Ты классификатор персонального ассистента. Сегодня: {now.strftime('%A %d %B %Y %H:%M')} (timezone: {TIMEZONE}).
 
@@ -396,29 +397,32 @@ async def classify(text: str) -> dict:
 
 ТИПЫ:
 
-"meal_session" — пользователь описывает приём пищи с НЕСКОЛЬКИМИ продуктами (готовит, перечисляет ингредиенты, делает шаурму/салат/ужин)
-data: {{"meal_type":"завтрак/обед/ужин/перекус", "items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+"meal_session" — пользователь описывает приём пищи с НЕСКОЛЬКИМИ продуктами (готовит, перечисляет ингредиенты; или записывает задним числом)
+data: {{"meal_type":"завтрак/обед/ужин/перекус", "date":"{now.strftime('%Y-%m-%d')}", "items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+date: дата приёма пищи. Сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}, позавчера={(now-timedelta(days=2)).strftime('%Y-%m-%d')}
+Если пользователь говорит "сегодня забыл записать завтрак" — date=сегодня, meal_type=завтрак
+Если "вчера на ужин ел" — date=вчера, meal_type=ужин
 cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г/100мл, иначе null
 brand — заполни если упомянут бренд/марка, иначе null
-unit: "мл" для НАПИТКОВ (вода, сок, кефир, молоко, кола, энергетик, чай, кофе, смузи, йогурт питьевой и любые жидкости), "г" для всего остального
+unit: "мл" для НАПИТКОВ, "г" для всего остального
 Примеры:
-"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session
-"на обед: гречка 200г и куриная грудка 150г и огурец 100г" → meal_session
-"лаваш Кулиничі 80г (на 100г: белки 10, жиры 4, угл 55), курица 300г" → meal_session, лаваш имеет brand:"Кулиничі", pro100:10, fat100:4, carb100:55
+"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session, date=сегодня
+"сегодня забыл записать завтрак: лаваш Кулиничі 300г, помидор 200г, курица 400г" → meal_session, meal_type:"завтрак", date=сегодня
+"вчера на обед ел гречку 200г и курицу 150г и огурец 100г" → meal_session, meal_type:"обед", date=вчера
 
 "food_log" — ОДИН или ДВА продукта, человек говорит что съел/выпил
-data: [{{"name":"название", "brand": null или "бренд", "grams": число, "unit": "г или мл", "cal100":null,"pro100":null,"fat100":null,"carb100":null}}]
-cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г, иначе null
-brand — заполни если упомянут бренд/марка, иначе null
-unit: "мл" для НАПИТКОВ (вода, сок, кефир, молоко, кола, энергетик, чай, кофе и любые жидкости), "г" для еды
-grams: если не указаны — оцени разумное количество (яблоко ≈ 150г, сникерс ≈ 55г, стакан воды ≈ 250мл)
+data: {{"date":"{now.strftime('%Y-%m-%d')}", "meal_type":null, "items":[{{"name":"название","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+date: когда съел. Сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}
+meal_type: "завтрак/обед/ужин/перекус" если указано, иначе null
+cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г
+brand — заполни если упомянут бренд/марка
+unit: "мл" для НАПИТКОВ, "г" для еды
+grams: если не указаны — оцени (яблоко ≈ 150г, сникерс ≈ 55г, стакан воды ≈ 250мл)
 Примеры:
-"съел сникерс" → [{{"name":"Сникерс","brand":null,"grams":55,"unit":"г","cal100":null,...}}]
-"съел яблоко" → [{{"name":"яблоко","brand":null,"grams":150,"unit":"г","cal100":null,...}}]
-"выпил Red Bull 250мл" → [{{"name":"Red Bull","brand":"Red Bull","grams":250,"unit":"мл","cal100":null,...}}]
-"лаваш армянский Кулиничі, на 100г белки 10г жиры 4г угл 55г, беру 800г" → [{{"name":"лаваш армянский","brand":"Кулиничі","grams":800,"unit":"г","cal100":null,"pro100":10,"fat100":4,"carb100":55}}]
-"съел 200г гречки и курицу 150г" → 2 элемента в data
-ВАЖНО: если человек называет продукт + КБЖУ на 100г + граммы — это food_log с заполненными pro100/fat100/carb100, НЕ add_product
+"съел сникерс" → items:[{{"name":"Сникерс","grams":55,"unit":"г",...}}], date=сегодня
+"вчера на завтрак съел яблоко" → date=вчера, meal_type:"завтрак", items:[{{"name":"яблоко","grams":150,...}}]
+"выпил Red Bull 250мл" → items:[{{"name":"Red Bull","grams":250,"unit":"мл",...}}]
+ВАЖНО: если человек называет продукт + КБЖУ на 100г + граммы — это food_log с заполненными pro100/fat100/carb100
 
 "food_clarify" — уточнение граммов к предыдущему запросу еды (просто число или "N грамм/г")
 data: {{"grams": число}}
@@ -470,13 +474,35 @@ data: {{"title":"...", "due_date":null, "priority":"normal/high/low"}}
 "goal" — записать долгосрочную цель
 data: {{"title":"...", "category":"здоровье/финансы/...", "target_date":null}}
 
-"query_today" — общая сводка дня ("что сегодня делал", "итог дня", "как я сегодня")
-"query_food" — ТОЛЬКО вопросы о еде ("что съел", "что я ел", "что я уже съел", "сколько калорий съел", "что я кушал")
-"query_workout" — вопрос о тренировках (сколько бегал, был ли в зале)
-"query_finances" — вопрос о деньгах/тратах
-data: {{"period":"today/week/month"}}
+"query_today" — общая сводка СЕГОДНЯШНЕГО дня ("что сегодня делал", "итог дня", "как я сегодня")
+data: {{}}
+
+"query_food" — вопрос о питании за конкретный день или период
+data: {{"date":null, "from_date":null, "to_date":null, "meal_type":null}}
+Примеры дат: сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}, позавчера={(now-timedelta(days=2)).strftime('%Y-%m-%d')}
+"что я сегодня ел" → date={now.strftime('%Y-%m-%d')}, meal_type:null
+"что я вчера съел" → date={yesterday}, meal_type:null
+"что я ел на завтрак" → date={now.strftime('%Y-%m-%d')}, meal_type:"завтрак"
+"что я ел на ужин в пятницу" → date=ближайшая прошлая пятница, meal_type:"ужин"
+"что я ел на этой неделе" → from_date=начало недели, to_date={now.strftime('%Y-%m-%d')}
+"сколько калорий я набрал вчера" → date={yesterday}
+
+"query_workout" — вопрос о тренировках
+data: {{"date":"{now.strftime('%Y-%m-%d')}"}}
+
+"query_finances" — вопрос о деньгах/доходах/расходах за период
+data: {{"from_date":"YYYY-MM-DD", "to_date":"YYYY-MM-DD", "subtype":"all/income/expense"}}
+Примеры:
+"сколько я заработал вчера" → from_date=вчера, to_date=вчера, subtype:"income"
+"сколько я потратил за неделю" → from_date=начало недели, to_date=сегодня, subtype:"expense"
+"какие расходы вчера" → from_date=вчера, to_date=вчера, subtype:"expense"
+"мои доходы за месяц" → from_date=начало месяца, to_date=сегодня, subtype:"income"
+Начало этой недели: {(now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')}
+Начало этого месяца: {now.strftime('%Y-%m-01')}
+
 "query_weight" — вопрос о весе/замерах
-"query_food" — вопрос о питании сегодня
+data: {{"from_date":null}}
+
 "general_chat" — всё остальное, вопросы, советы
 
 Верни JSON: {{"type":"...", "data":...}}"""
@@ -486,8 +512,18 @@ data: {{"period":"today/week/month"}}
 
 # ── Форматирование ────────────────────────────────────────────────────
 
-def fmt_food(items: list) -> str:
-    lines = ["📝 *Записать приём пищи?*\n"]
+def fmt_food(items: list, log_date: str = None, meal_type: str = None) -> str:
+    td = today_str()
+    date_label = ""
+    if log_date and log_date != td:
+        try:
+            from datetime import datetime as _dt
+            d = _dt.strptime(log_date, "%Y-%m-%d")
+            date_label = f" за {d.strftime('%d.%m')}"
+        except:
+            date_label = f" за {log_date}"
+    meal_label = f" ({meal_type})" if meal_type else ""
+    lines = [f"📝 *Записать{meal_label}{date_label}?*\n"]
     for it in items:
         est  = " _(оценка ИИ)_" if it.get("auto_estimated") else ""
         unit = it.get("unit", "г")
@@ -536,6 +572,7 @@ def fmt_workout(d: dict) -> str:
 def fmt_meal_session(data: dict) -> str:
     items     = data.get("items", [])
     meal_type = data.get("meal_type", "приём пищи")
+    log_date  = data.get("date", today_str())
     now_t     = now_local().strftime("%H:%M")
 
     total_cal = sum(it.get("calories") or 0 for it in items)
@@ -543,7 +580,17 @@ def fmt_meal_session(data: dict) -> str:
     total_f   = sum(it.get("fat")      or 0 for it in items)
     total_c   = sum(it.get("carbs")    or 0 for it in items)
 
-    lines = [f"🍽 *{meal_type.capitalize()} — {now_t}*\n"]
+    td = today_str()
+    date_label = ""
+    if log_date and log_date != td:
+        try:
+            from datetime import datetime as _dt
+            d = _dt.strptime(log_date, "%Y-%m-%d")
+            date_label = f" — {d.strftime('%d.%m')}"
+        except:
+            date_label = f" — {log_date}"
+
+    lines = [f"🍽 *{meal_type.capitalize()}{date_label}*\n"]
     for it in items:
         cal  = round(it.get("calories") or 0)
         src  = " _(ИИ)_" if it.get("auto_estimated") else ""
@@ -574,11 +621,12 @@ async def save_action(pending: dict) -> str:
     if t in ("food_log", "meal_session"):
         items     = data.get("items", [])
         meal_type = data.get("meal_type")
+        log_date  = data.get("date", td)   # поддержка задних чисел
         logged_at = now_local().isoformat()
 
         for it in items:
             row = {
-                "date": td, "logged_at": logged_at,
+                "date": log_date, "logged_at": logged_at,
                 "product_name": it.get("product_name"),
                 "grams":    it.get("grams"),
                 "calories": it.get("calories"),
@@ -609,8 +657,9 @@ async def save_action(pending: dict) -> str:
         total_p   = round(sum(it.get("protein")  or 0 for it in items))
         total_f   = round(sum(it.get("fat")      or 0 for it in items))
         total_c   = round(sum(it.get("carbs")    or 0 for it in items))
-        meal_label = f" ({meal_type})" if meal_type else ""
-        return (f"✅ {meal_label} записан!\n"
+        meal_label = f" {meal_type}" if meal_type else ""
+        date_label = f" за {log_date}" if log_date != td else ""
+        return (f"✅{meal_label}{date_label} записан!\n"
                 f"{total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
 
     if t == "add_product":
@@ -921,6 +970,8 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         p_grams      = float(pdata["grams"])
         p_unit       = pdata.get("unit", "г")
         done_items   = pdata.get("resolved_items", [])
+        p_log_date   = pdata.get("log_date", today_str())
+        p_meal_type  = pdata.get("meal_type")
         manual_mode  = pdata.get("manual_mode", False)
 
         brand_str = f" ({p_brand})" if p_brand else ""
@@ -992,9 +1043,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 "product_id": pid, "auto_estimated": False,
             }
             all_items = done_items + [new_item]
-            save_pending("food_log", {"items": all_items}, update.message.message_id)
+            fl_pending = {"items": all_items, "date": p_log_date, "meal_type": p_meal_type}
+            save_pending("food_log", fl_pending, update.message.message_id)
             await update.message.reply_text(
-                f"✅ Продукт «{p_name}{brand_str}» сохранён в базу!\n\n" + fmt_food(all_items),
+                f"✅ Продукт «{p_name}{brand_str}» сохранён в базу!\n\n" + fmt_food(all_items, p_log_date, p_meal_type),
                 parse_mode="Markdown"
             )
             return
@@ -1006,8 +1058,9 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             try:
                 result = await get_nutrition(p_name, p_grams, brand=p_brand, unit=p_unit)
                 all_items = done_items + [result]
-                save_pending("food_log", {"items": all_items}, update.message.message_id)
-                await update.message.reply_text(fmt_food(all_items), parse_mode="Markdown")
+                fl_pending = {"items": all_items, "date": p_log_date, "meal_type": p_meal_type}
+                save_pending("food_log", fl_pending, update.message.message_id)
+                await update.message.reply_text(fmt_food(all_items, p_log_date, p_meal_type), parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"online search error: {e}")
                 await update.message.reply_text("Не смог найти в интернете. Напиши КБЖУ сам.")
@@ -1078,13 +1131,22 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
 
     # ── food_log ──
     if msg_type == "food_log":
-        raw = data if isinstance(data, list) else []
+        # Поддерживаем оба формата: список (старый) и dict с date/meal_type (новый)
+        if isinstance(data, dict):
+            raw          = data.get("items", [])
+            log_date     = data.get("date", today_str())
+            meal_type_fl = data.get("meal_type")
+        else:
+            raw          = data if isinstance(data, list) else []
+            log_date     = today_str()
+            meal_type_fl = None
+
         if not raw:
             await update.message.reply_text("Не понял что ты съел. Напиши например: «съел 200г гречки и куриную грудку 150г»")
             return
 
         await update.message.reply_text("⏳ Проверяю базу продуктов...")
-        resolved = []
+        resolved  = []
         not_found = None
 
         for item in raw:
@@ -1098,15 +1160,17 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 logger.error(f"resolve error for {item}: {e}")
 
         if not_found:
-            brand = not_found.get("brand")
+            brand     = not_found.get("brand")
             brand_str = f" ({brand})" if brand else ""
             save_pending("product_lookup_choice", {
-                "product_name": not_found["name"],
-                "brand": brand,
-                "grams": not_found["grams"],
-                "unit": not_found.get("unit", "г"),
+                "product_name":   not_found["name"],
+                "brand":          brand,
+                "grams":          not_found["grams"],
+                "unit":           not_found.get("unit", "г"),
                 "resolved_items": resolved,
-                "manual_mode": False,
+                "log_date":       log_date,
+                "meal_type":      meal_type_fl,
+                "manual_mode":    False,
             }, update.message.message_id)
             await update.message.reply_text(
                 f"🔍 Продукта «{not_found['name']}{brand_str}» нет в моей базе.\n\n"
@@ -1118,8 +1182,9 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             )
             return
 
-        save_pending("food_log", {"items": resolved}, update.message.message_id)
-        await update.message.reply_text(fmt_food(resolved), parse_mode="Markdown")
+        pending_data = {"items": resolved, "date": log_date, "meal_type": meal_type_fl}
+        save_pending("food_log", pending_data, update.message.message_id)
+        await update.message.reply_text(fmt_food(resolved, log_date, meal_type_fl), parse_mode="Markdown")
 
     # ── food_log_known_macros: съел X г + КБЖУ указан для этого количества ──
     elif msg_type == "food_log_known_macros":
@@ -1235,11 +1300,28 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(get_workout_stats(), parse_mode="Markdown")
 
     elif msg_type == "query_food":
-        await update.message.reply_text(get_food_stats_today(), parse_mode="Markdown")
+        d = data if isinstance(data, dict) else {}
+        q_date     = d.get("date")
+        from_date  = d.get("from_date")
+        to_date    = d.get("to_date")
+        q_meal     = d.get("meal_type")
+        if from_date and to_date:
+            await update.message.reply_text(get_food_period(from_date, to_date), parse_mode="Markdown")
+        elif q_date:
+            await update.message.reply_text(get_food_history(q_date, q_meal), parse_mode="Markdown")
+        else:
+            await update.message.reply_text(get_food_stats_today(), parse_mode="Markdown")
 
     elif msg_type == "query_finances":
-        period = data.get("period", "month") if isinstance(data, dict) else "month"
-        await update.message.reply_text(get_finance_stats(period), parse_mode="Markdown")
+        d = data if isinstance(data, dict) else {}
+        from_date = d.get("from_date", today_str())
+        to_date   = d.get("to_date",   today_str())
+        subtype   = d.get("subtype", "all")
+        if d.get("period") == "week":
+            from_date = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+        elif d.get("period") == "month":
+            from_date = date.today().replace(day=1).isoformat()
+        await update.message.reply_text(get_finance_history(from_date, to_date, subtype), parse_mode="Markdown")
 
     elif msg_type == "query_weight":
         rows = supabase.table("body_measurements").select("date,weight,fat_percent,muscle_percent,bmr").order("date", desc=True).limit(10).execute().data or []
@@ -1403,6 +1485,111 @@ async def send_morning_message(bot: Bot):
         "status": "pending",
     }).execute()
 
+def get_food_history(query_date: str, meal_type: str = None) -> str:
+    """Питание за конкретный день (с фильтром по приёму пищи)."""
+    food = supabase.table("food_log").select("*").eq("date", query_date).execute().data or []
+    if meal_type:
+        food = [r for r in food if (r.get("meal_type") or "").lower() == meal_type.lower()]
+
+    try:
+        from datetime import datetime as _dt
+        d_label = _dt.strptime(query_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except:
+        d_label = query_date
+
+    if not food:
+        mt_label = f" на {meal_type}" if meal_type else ""
+        return f"За {d_label}{mt_label} ничего не записано."
+
+    total_cal = round(sum(r.get("calories") or 0 for r in food))
+    total_p   = round(sum(r.get("protein")  or 0 for r in food))
+    total_f   = round(sum(r.get("fat")      or 0 for r in food))
+    total_c   = round(sum(r.get("carbs")    or 0 for r in food))
+
+    mt_label = f" — {meal_type}" if meal_type else ""
+    lines = [f"🍽 *Питание за {d_label}{mt_label}:*\n"]
+
+    # Группируем по приёму пищи
+    by_meal: dict = {}
+    for r in food:
+        mt = r.get("meal_type") or "прочее"
+        by_meal.setdefault(mt, []).append(r)
+
+    for mt, items in by_meal.items():
+        if not meal_type:
+            lines.append(f"*{mt.capitalize()}:*")
+        for r in items:
+            unit = r.get("unit", "г")
+            lines.append(f"  • {r.get('product_name')}: {r.get('grams')}{unit} — {round(r.get('calories') or 0)} ккал")
+        sub_cal = round(sum(r.get("calories") or 0 for r in items))
+        if not meal_type:
+            lines.append(f"  → {sub_cal} ккал\n")
+
+    lines.append(f"📊 *Итого:* {total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
+    return "\n".join(lines)
+
+def get_food_period(from_date: str, to_date: str) -> str:
+    """Питание за период."""
+    food = supabase.table("food_log").select("*") \
+        .gte("date", from_date).lte("date", to_date).execute().data or []
+    if not food:
+        return f"За период {from_date} — {to_date} ничего не записано."
+
+    total_cal = sum(r.get("calories") or 0 for r in food)
+    total_p   = sum(r.get("protein")  or 0 for r in food)
+    total_f   = sum(r.get("fat")      or 0 for r in food)
+    total_c   = sum(r.get("carbs")    or 0 for r in food)
+    days_set  = set(r["date"] for r in food)
+    n_days    = len(days_set)
+
+    lines = [f"🍽 *Питание {from_date} — {to_date}*\n",
+             f"Дней с записями: {n_days}",
+             f"Итого: {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г",
+             f"В среднем/день: {round(total_cal/n_days)} ккал | Б {round(total_p/n_days)}г | Ж {round(total_f/n_days)}г | У {round(total_c/n_days)}г"]
+    return "\n".join(lines)
+
+def get_finance_history(from_date: str, to_date: str, subtype: str = "all") -> str:
+    """Финансы за период с фильтром по типу (income/expense/all)."""
+    fin = supabase.table("finances").select("*") \
+        .gte("date", from_date).lte("date", to_date).execute().data or []
+    if subtype == "income":
+        fin = [r for r in fin if r["type"] == "income"]
+    elif subtype == "expense":
+        fin = [r for r in fin if r["type"] == "expense"]
+
+    try:
+        from datetime import datetime as _dt
+        fd = _dt.strptime(from_date, "%Y-%m-%d").strftime("%d.%m")
+        td = _dt.strptime(to_date,   "%Y-%m-%d").strftime("%d.%m")
+        period_label = fd if from_date == to_date else f"{fd} — {td}"
+    except:
+        period_label = f"{from_date} — {to_date}"
+
+    if not fin:
+        sub_label = {"income": "доходов", "expense": "расходов"}.get(subtype, "транзакций")
+        return f"За {period_label} нет {sub_label}."
+
+    income  = sum(r["amount"] for r in fin if r["type"] == "income")
+    expense = sum(r["amount"] for r in fin if r["type"] == "expense")
+    cur     = fin[0].get("currency", "UAH")
+
+    lines = [f"💰 *Финансы за {period_label}*\n"]
+    if subtype in ("all", "income") and income:
+        lines.append(f"Доходы: +{income} {cur}")
+        for r in [x for x in fin if x["type"] == "income"]:
+            lines.append(f"  • {r.get('description', r.get('category',''))} — +{r['amount']} {cur}")
+    if subtype in ("all", "expense") and expense:
+        lines.append(f"Расходы: -{expense} {cur}")
+        cats: dict = {}
+        for r in [x for x in fin if x["type"] == "expense"]:
+            cat = r.get("store_name") or r.get("category") or "прочее"
+            cats[cat] = cats.get(cat, 0) + r["amount"]
+        for cat, amt in sorted(cats.items(), key=lambda x: -x[1]):
+            lines.append(f"  • {cat}: {amt} {cur}")
+    if subtype == "all":
+        lines.append(f"\nБаланс: {income - expense:+.0f} {cur}")
+    return "\n".join(lines)
+
 async def send_daily_summary(bot: Bot):
     chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
     if not chat_id:
@@ -1412,6 +1599,128 @@ async def send_daily_summary(bot: Bot):
         await bot.send_message(chat_id=chat_id, text=f"🌙 *Вечерняя сводка*\n\n{summary}", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"daily summary error: {e}")
+
+async def send_weekly_summary(bot: Bot):
+    """Воскресенье 22:00 — сводка за неделю."""
+    chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
+    if not chat_id:
+        return
+    try:
+        now  = now_local()
+        week_end   = now.strftime("%Y-%m-%d")
+        week_start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+
+        food   = supabase.table("food_log").select("*").gte("date", week_start).lte("date", week_end).execute().data or []
+        bodies = supabase.table("body_measurements").select("date,weight").gte("date", week_start).order("date").execute().data or []
+        fin    = supabase.table("finances").select("*").gte("date", week_start).lte("date", week_end).execute().data or []
+        works  = supabase.table("workouts").select("*").gte("date", week_start).execute().data or []
+
+        total_cal = sum(r.get("calories") or 0 for r in food)
+        total_p   = sum(r.get("protein")  or 0 for r in food)
+        total_f   = sum(r.get("fat")      or 0 for r in food)
+        total_c   = sum(r.get("carbs")    or 0 for r in food)
+        n_days    = max(len(set(r["date"] for r in food)), 1)
+        income    = sum(r["amount"] for r in fin if r["type"] == "income")
+        expense   = sum(r["amount"] for r in fin if r["type"] == "expense")
+        cur       = fin[0].get("currency", "UAH") if fin else "UAH"
+
+        lines = [f"📊 *Сводка за неделю ({week_start} — {week_end})*\n"]
+        lines.append(f"🍽 *Питание* ({n_days} дней с записями):")
+        lines.append(f"   Итого: {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+        lines.append(f"   Среднее/день: {round(total_cal/n_days)} ккал | Б {round(total_p/n_days)}г | Ж {round(total_f/n_days)}г | У {round(total_c/n_days)}г")
+
+        if bodies:
+            w_start = bodies[0]["weight"]
+            w_end   = bodies[-1]["weight"]
+            diff    = round(w_end - w_start, 1)
+            arrow   = "↑" if diff > 0 else "↓" if diff < 0 else "→"
+            lines.append(f"⚖️ *Вес:* {w_start} → {w_end} кг ({arrow}{abs(diff)} кг)")
+
+        if works:
+            lines.append(f"💪 *Тренировок:* {len(works)} за неделю")
+
+        if income or expense:
+            lines.append(f"💰 *Финансы:* +{income} / -{expense} {cur} (баланс {income-expense:+.0f})")
+
+        stats_text = "\n".join(lines)
+        try:
+            conclusion = await gpt(
+                "Ты личный ИИ-ассистент. Дай короткий (2-3 предложения) вывод за неделю. "
+                "Отметь успехи и дай один совет. Тепло, на русском.",
+                stats_text
+            )
+            lines.append(f"\n💬 {conclusion}")
+        except:
+            pass
+
+        await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"weekly summary error: {e}")
+
+async def send_monthly_summary(bot: Bot):
+    """1-е число 15:00 — сводка за прошлый месяц."""
+    chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
+    if not chat_id:
+        return
+    try:
+        now       = now_local()
+        # Прошлый месяц
+        first_this = now.replace(day=1)
+        last_prev  = first_this - timedelta(days=1)
+        month_end  = last_prev.strftime("%Y-%m-%d")
+        month_start = last_prev.replace(day=1).strftime("%Y-%m-%d")
+        month_name  = last_prev.strftime("%B %Y")
+
+        food   = supabase.table("food_log").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
+        bodies = supabase.table("body_measurements").select("date,weight,fat_percent").gte("date", month_start).order("date").execute().data or []
+        fin    = supabase.table("finances").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
+        works  = supabase.table("workouts").select("*").gte("date", month_start).execute().data or []
+
+        total_cal = sum(r.get("calories") or 0 for r in food)
+        total_p   = sum(r.get("protein")  or 0 for r in food)
+        total_f   = sum(r.get("fat")      or 0 for r in food)
+        total_c   = sum(r.get("carbs")    or 0 for r in food)
+        n_days    = max(len(set(r["date"] for r in food)), 1)
+        income    = sum(r["amount"] for r in fin if r["type"] == "income")
+        expense   = sum(r["amount"] for r in fin if r["type"] == "expense")
+        cur       = fin[0].get("currency", "UAH") if fin else "UAH"
+
+        lines = [f"📅 *Итог месяца — {month_name}*\n"]
+        lines.append(f"🍽 *Питание* ({n_days} дней):")
+        lines.append(f"   Итого: {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+        lines.append(f"   Среднее/день: {round(total_cal/n_days)} ккал | Б {round(total_p/n_days)}г | Ж {round(total_f/n_days)}г | У {round(total_c/n_days)}г")
+
+        if bodies:
+            w_start = bodies[0]["weight"]
+            w_end   = bodies[-1]["weight"]
+            diff    = round(w_end - w_start, 1)
+            arrow   = "↑" if diff > 0 else "↓" if diff < 0 else "→"
+            f_start = bodies[0].get("fat_percent", "?")
+            f_end   = bodies[-1].get("fat_percent", "?")
+            lines.append(f"⚖️ *Вес:* {w_start} → {w_end} кг ({arrow}{abs(diff)} кг)")
+            lines.append(f"   Жир: {f_start}% → {f_end}%")
+
+        if works:
+            lines.append(f"💪 *Тренировок:* {len(works)} за месяц")
+
+        if income or expense:
+            lines.append(f"💰 *Финансы:* +{income} / -{expense} {cur} (баланс {income-expense:+.0f})")
+
+        stats_text = "\n".join(lines)
+        try:
+            conclusion = await gpt(
+                "Ты личный ИИ-ассистент. Дай развёрнутый (3-5 предложений) вывод за месяц. "
+                "Оцени прогресс, отметь достижения и дай конкретный совет на следующий месяц. "
+                "Тепло и конструктивно, на русском.",
+                stats_text
+            )
+            lines.append(f"\n💬 {conclusion}")
+        except:
+            pass
+
+        await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"monthly summary error: {e}")
 
 # ── Main ─────────────────────────────────────────────────────────────
 
@@ -1423,9 +1732,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(check_reminders,      "interval", minutes=1,           args=[app.bot])
-    scheduler.add_job(send_morning_message, "cron", hour=10, minute=0,       args=[app.bot])
-    scheduler.add_job(send_daily_summary,   "cron", hour=21, minute=0,       args=[app.bot])
+    scheduler.add_job(check_reminders,      "interval", minutes=1,                          args=[app.bot])
+    scheduler.add_job(send_morning_message, "cron", hour=10, minute=0,                      args=[app.bot])
+    scheduler.add_job(send_daily_summary,   "cron", hour=23, minute=55,                     args=[app.bot])
+    scheduler.add_job(send_weekly_summary,  "cron", day_of_week="sun", hour=22, minute=0,   args=[app.bot])
+    scheduler.add_job(send_monthly_summary, "cron", day=1,              hour=15, minute=0,   args=[app.bot])
     scheduler.start()
 
     logger.info("Bot started")
