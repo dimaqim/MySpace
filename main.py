@@ -26,16 +26,18 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-CONFIRM_WORDS = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "всё верно", "все верно"]
-DENY_WORDS = ["нет", "неверно", "не то", "отмена", "cancel", "no", "стоп"]
+CONFIRM_WORDS = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "всё верно", "все верно", "сохрани", "давай"]
+DENY_WORDS = ["нет", "неверно", "не то", "отмена", "cancel", "no", "стоп", "не надо"]
 
 
 def is_confirm(text: str) -> bool:
-    return any(w in text.lower() for w in CONFIRM_WORDS)
+    t = text.lower().strip()
+    return any(t == w or t.startswith(w) for w in CONFIRM_WORDS)
 
 
 def is_deny(text: str) -> bool:
-    return any(w in text.lower() for w in DENY_WORDS)
+    t = text.lower().strip()
+    return any(t == w or t.startswith(w) for w in DENY_WORDS)
 
 
 def get_pending():
@@ -50,6 +52,7 @@ def clear_pending(pending_id: str):
 
 
 def save_pending(action_type: str, data: dict, telegram_message_id: str = None):
+    supabase.table("pending_actions").update({"status": "expired"}).eq("status", "pending").execute()
     supabase.table("pending_actions").insert({
         "type": action_type,
         "data": data,
@@ -86,9 +89,9 @@ async def analyze_image(image_bytes: bytes, prompt: str) -> str:
     return response.choices[0].message.content
 
 
-async def ask_ai(system: str, user_message: str) -> str:
+async def ask_ai(system: str, user_message: str, model: str = "gpt-4o-mini") -> str:
     response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_message}
@@ -108,6 +111,27 @@ def parse_json_response(text: str) -> dict:
             if text.startswith("json"):
                 text = text[4:]
     return json.loads(text.strip())
+
+
+async def estimate_macros(product_name: str, grams: float) -> dict:
+    """Ask GPT to estimate macros for food not in DB."""
+    system = """Ты эксперт по питанию. Оцени КБЖУ продукта на 100г.
+Верни ТОЛЬКО JSON без лишнего текста:
+{"calories": число, "protein": число, "fat": число, "carbs": число}
+Числа - реальные средние значения для этого продукта."""
+    result = await ask_ai(system, f"Продукт: {product_name}")
+    data = parse_json_response(result)
+    ratio = grams / 100
+    return {
+        "calories": round(data["calories"] * ratio, 1),
+        "protein": round(data["protein"] * ratio, 1),
+        "fat": round(data["fat"] * ratio, 1),
+        "carbs": round(data["carbs"] * ratio, 1),
+        "cal100": data["calories"],
+        "pro100": data["protein"],
+        "fat100": data["fat"],
+        "carb100": data["carbs"],
+    }
 
 
 async def handle_body_measurement_image(image_bytes: bytes) -> dict:
@@ -145,43 +169,73 @@ Return ONLY JSON, no other text:
 
 
 async def classify_message(text: str) -> dict:
-    system = """You are a classifier for a health and nutrition assistant. Classify the user message and return JSON:
+    system = """Ты классификатор для персонального ассистента по здоровью и питанию.
+Определи тип сообщения и верни JSON:
 {
-  "type": one of the types below,
-  "data": extracted data
+  "type": один из типов ниже,
+  "data": извлечённые данные
 }
 
-Types:
-- "body_measurement_text" - user describes body measurements in text
-- "add_product" - add a product to database with nutrition info
-- "daily_goals" - request daily nutrition goals
-- "meal_plan" - create a meal plan for the day
-- "food_log" - log what was eaten
-- "workout_update" - user mentions workout
-- "other" - anything else
+Типы:
+- "body_measurement_text" - пользователь описывает замеры тела (вес, жир, мышцы и тд)
+- "add_product" - добавить продукт с КБЖУ в базу (когда явно указаны калории/белки/жиры/углеводы на 100г)
+- "daily_goals" - запрос целей питания на день / упоминание тренировки
+- "food_log" - записать что съел (просто еда и граммы, без КБЖУ)
+- "query_today" - вопрос о том что съел сегодня / сколько калорий / остаток КБЖУ
+- "query_weight" - вопрос о динамике веса / замерах тела
+- "general_chat" - общий вопрос, совет, мотивация, вопрос о питании/здоровье
 
-For "food_log" extract: [{"name": "product", "grams": number}, ...]
-For "add_product" extract: {"name": "...", "brand": "...", "calories": ..., "protein": ..., "fat": ..., "carbs": ...}
-For "workout_update" extract: {"has_workout": true/false}
-For "meal_plan" extract: {"products": ["list"], "meals_count": number, "notes": "notes"}
+Для "food_log" извлеки: [{"name": "продукт", "grams": число}, ...]
+Для "add_product" извлеки: {"name": "...", "brand": null, "calories": ..., "protein": ..., "fat": ..., "carbs": ...}
+Для "workout_update" извлеки: {"has_workout": true/false}
+Для "daily_goals" извлеки: {"has_workout": true или false}
 
-Return ONLY JSON."""
+Верни ТОЛЬКО JSON."""
 
     result = await ask_ai(system, text)
     return parse_json_response(result)
 
 
+def get_today_stats() -> dict:
+    today = date.today().isoformat()
+    food = supabase.table("food_log").select("*").eq("date", today).execute()
+    goals = supabase.table("daily_goals").select("*").eq("date", today).single().execute()
+
+    total_cal = total_p = total_f = total_c = 0
+    items = []
+    for row in (food.data or []):
+        total_cal += row.get("calories") or 0
+        total_p += row.get("protein") or 0
+        total_f += row.get("fat") or 0
+        total_c += row.get("carbs") or 0
+        items.append(f"• {row.get('product_name', '?')}: {row.get('grams', 0)} г ({round(row.get('calories') or 0)} ккал)")
+
+    return {
+        "items": items,
+        "total_cal": round(total_cal),
+        "total_p": round(total_p),
+        "total_f": round(total_f),
+        "total_c": round(total_c),
+        "goals": goals.data,
+    }
+
+
+def get_weight_history() -> list:
+    rows = supabase.table("body_measurements").select("date,weight,fat_percent,muscle_percent").order("date", desc=True).limit(10).execute()
+    return rows.data or []
+
+
 def format_measurement(data: dict) -> str:
     lines = ["Я распознал замер:\n"]
-    if data.get("weight"): lines.append(f"Вес: {data['weight']} кг")
-    if data.get("bmi"): lines.append(f"ИМТ: {data['bmi']}")
-    if data.get("fat_percent"): lines.append(f"Жир: {data['fat_percent']}%")
-    if data.get("muscle_percent"): lines.append(f"Мышцы: {data['muscle_percent']}%")
-    if data.get("water_percent"): lines.append(f"Вода: {data['water_percent']}%")
-    if data.get("visceral_fat"): lines.append(f"Висцеральный жир: {data['visceral_fat']}")
-    if data.get("bmr"): lines.append(f"Базовый обмен: {data['bmr']} ккал")
+    if data.get("weight"): lines.append(f"⚖️ Вес: {data['weight']} кг")
+    if data.get("bmi"): lines.append(f"📊 ИМТ: {data['bmi']}")
+    if data.get("fat_percent"): lines.append(f"🟡 Жир: {data['fat_percent']}%")
+    if data.get("muscle_percent"): lines.append(f"💪 Мышцы: {data['muscle_percent']}%")
+    if data.get("water_percent"): lines.append(f"💧 Вода: {data['water_percent']}%")
+    if data.get("visceral_fat"): lines.append(f"🔴 Висцеральный жир: {data['visceral_fat']}")
+    if data.get("bmr"): lines.append(f"🔥 Базовый обмен: {data['bmr']} ккал")
     if data.get("fat_mass"): lines.append(f"Жировая масса: {data['fat_mass']} кг")
-    if data.get("lean_mass"): lines.append(f"Вес без жира: {data['lean_mass']} кг")
+    if data.get("lean_mass"): lines.append(f"Сухая масса: {data['lean_mass']} кг")
     lines.append("\nПодтверждаешь сохранение?")
     return "\n".join(lines)
 
@@ -189,14 +243,13 @@ def format_measurement(data: dict) -> str:
 def format_product(data: dict) -> str:
     brand = f" ({data['brand']})" if data.get("brand") else ""
     return (
-        f"Нашёл продукт:\n\n"
-        f"{data['name']}{brand}\n"
+        f"📦 {data['name']}{brand}\n"
         f"на 100 г:\n"
-        f"{data['calories']} ккал\n"
-        f"Белки: {data['protein']} г\n"
-        f"Жиры: {data['fat']} г\n"
-        f"Углеводы: {data['carbs']} г\n\n"
-        f"Подтверждаешь добавление в базу?"
+        f"🔥 {data['calories']} ккал\n"
+        f"🥩 Белки: {data['protein']} г\n"
+        f"🧈 Жиры: {data['fat']} г\n"
+        f"🌾 Углеводы: {data['carbs']} г\n\n"
+        f"Добавить в базу продуктов?"
     )
 
 
@@ -208,24 +261,36 @@ async def save_confirmed_action(pending: dict) -> str:
     if action_type == "body_measurement":
         data["date"] = today
         supabase.table("body_measurements").upsert(data, on_conflict="date").execute()
-        return "Замер сохранён!"
+        return "✅ Замер сохранён!"
 
     elif action_type == "product":
         supabase.table("products").insert(data).execute()
-        return f"Продукт «{data['name']}» добавлен в базу!"
+        return f"✅ Продукт «{data['name']}» добавлен в базу!"
 
     elif action_type == "food_log":
         for item in data.get("items", []):
             item["date"] = today
-            supabase.table("food_log").insert(item).execute()
-        return "Еда записана в дневник!"
+            row = {k: v for k, v in item.items() if k != "cal100" and k != "pro100" and k != "fat100" and k != "carb100"}
+            supabase.table("food_log").insert(row).execute()
+            # Also auto-save product to DB if not exists
+            if item.get("auto_estimated") and item.get("product_name"):
+                existing = supabase.table("products").select("id").ilike("name", f"%{item['product_name']}%").limit(1).execute()
+                if not existing.data:
+                    supabase.table("products").insert({
+                        "name": item["product_name"],
+                        "calories": item.get("cal100"),
+                        "protein": item.get("pro100"),
+                        "fat": item.get("fat100"),
+                        "carbs": item.get("carb100"),
+                    }).execute()
+        return "✅ Еда записана в дневник!"
 
     elif action_type == "daily_goals":
         data["date"] = today
         supabase.table("daily_goals").upsert(data, on_conflict="date").execute()
-        return "Дневные цели сохранены!"
+        return "✅ Цели дня сохранены!"
 
-    return "Сохранено!"
+    return "✅ Сохранено!"
 
 
 async def calculate_daily_goals(bmr: int, has_workout: bool) -> dict:
@@ -251,11 +316,11 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if is_confirm(text):
             clear_pending(pending["id"])
             result_msg = await save_confirmed_action(pending)
-            await update.message.reply_text(f"✓ {result_msg}")
+            await update.message.reply_text(result_msg)
             return
         elif is_deny(text):
             clear_pending(pending["id"])
-            await update.message.reply_text("Отменено. Что хочешь сделать?")
+            await update.message.reply_text("Отменено.")
             return
 
     try:
@@ -264,7 +329,7 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         data = classified.get("data", {})
     except Exception as e:
         logger.error(f"classify error: {e}")
-        await update.message.reply_text("Не смог разобрать запрос. Попробуй ещё раз или переформулируй.")
+        await update.message.reply_text("Не смог разобрать запрос. Попробуй переформулировать.")
         return
 
     if msg_type == "body_measurement_text":
@@ -276,35 +341,42 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(format_product(data))
 
     elif msg_type in ("daily_goals", "workout_update"):
-        has_workout = data.get("has_workout", False)
+        has_workout = data.get("has_workout", False) if isinstance(data, dict) else False
         measurement = supabase.table("body_measurements").select("bmr").order("date", desc=True).limit(1).execute()
         bmr = 1800
         if measurement.data and measurement.data[0].get("bmr"):
             bmr = measurement.data[0]["bmr"]
 
         goals = await calculate_daily_goals(bmr, has_workout)
-        workout_text = "с тренировкой" if has_workout else "без тренировки"
+        workout_text = "💪 С тренировкой" if has_workout else "🛋 Без тренировки"
         msg = (
-            f"Сегодня {workout_text}.\n\n"
-            f"Цель дня:\n"
-            f"{goals['calories']} ккал\n"
-            f"{goals['protein']} г белка\n"
-            f"{goals['fat']} г жиров\n"
-            f"{goals['carbs']} г углеводов\n"
-            f"Запас: {goals['calorie_buffer']} ккал\n\n"
+            f"{workout_text}\n\n"
+            f"🎯 Цели на сегодня:\n"
+            f"🔥 {goals['calories']} ккал\n"
+            f"🥩 Белки: {goals['protein']} г\n"
+            f"🧈 Жиры: {goals['fat']} г\n"
+            f"🌾 Углеводы: {goals['carbs']} г\n\n"
             f"Подтверждаешь?"
         )
         save_pending("daily_goals", goals, update.message.message_id)
         await update.message.reply_text(msg)
 
     elif msg_type == "food_log":
-        items = data if isinstance(data, list) else data.get("items", [])
+        items = data if isinstance(data, list) else data.get("items", data if isinstance(data, list) else [])
+        if not items:
+            await update.message.reply_text("Не понял что ты съел. Напиши например: «съел 200г гречки и 150г куриной грудки»")
+            return
+
+        await update.message.reply_text("⏳ Считаю КБЖУ...")
+
         total_cal = total_p = total_f = total_c = 0
         log_items = []
 
         for item in items:
             product_name = item.get("name", "")
-            grams = item.get("grams", 100)
+            grams = float(item.get("grams", 100))
+
+            # Try to find in DB first
             product = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
 
             if product.data:
@@ -314,39 +386,136 @@ async def process_text_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 prot = round(p["protein"] * ratio, 1)
                 fat_v = round(p["fat"] * ratio, 1)
                 carb = round(p["carbs"] * ratio, 1)
-                log_items.append({"product_name": product_name, "grams": grams, "calories": cal, "protein": prot, "fat": fat_v, "carbs": carb, "product_id": p["id"]})
-                total_cal += cal; total_p += prot; total_f += fat_v; total_c += carb
+                log_items.append({
+                    "product_name": product_name,
+                    "grams": grams,
+                    "calories": cal,
+                    "protein": prot,
+                    "fat": fat_v,
+                    "carbs": carb,
+                    "product_id": p["id"],
+                    "auto_estimated": False,
+                })
             else:
-                log_items.append({"product_name": product_name, "grams": grams, "calories": None, "protein": None, "fat": None, "carbs": None})
+                # Estimate via GPT
+                try:
+                    macros = await estimate_macros(product_name, grams)
+                    log_items.append({
+                        "product_name": product_name,
+                        "grams": grams,
+                        "calories": macros["calories"],
+                        "protein": macros["protein"],
+                        "fat": macros["fat"],
+                        "carbs": macros["carbs"],
+                        "cal100": macros["cal100"],
+                        "pro100": macros["pro100"],
+                        "fat100": macros["fat100"],
+                        "carb100": macros["carb100"],
+                        "auto_estimated": True,
+                    })
+                except Exception as e:
+                    logger.error(f"estimate_macros error: {e}")
+                    log_items.append({
+                        "product_name": product_name,
+                        "grams": grams,
+                        "calories": 0,
+                        "protein": 0,
+                        "fat": 0,
+                        "carbs": 0,
+                        "auto_estimated": False,
+                    })
 
-        lines = ["Записать как съеденное?\n"]
+            total_cal += log_items[-1].get("calories") or 0
+            total_p += log_items[-1].get("protein") or 0
+            total_f += log_items[-1].get("fat") or 0
+            total_c += log_items[-1].get("carbs") or 0
+
+        lines = ["📝 Записать как съеденное?\n"]
         for item in log_items:
-            if item.get("calories"):
-                lines.append(f"{item['product_name']}: {item['grams']} г ({item['calories']} ккал)")
-            else:
-                lines.append(f"{item['product_name']}: {item['grams']} г (нет в базе — добавь продукт сначала)")
-        if total_cal > 0:
-            lines.append(f"\nИтого: {round(total_cal)} ккал | Б: {round(total_p)} г | Ж: {round(total_f)} г | У: {round(total_c)} г")
+            est = " (~оценка ИИ)" if item.get("auto_estimated") else ""
+            lines.append(f"• {item['product_name']}: {item['grams']} г — {round(item.get('calories') or 0)} ккал{est}")
+
+        lines.append(f"\n📊 Итого: {round(total_cal)} ккал")
+        lines.append(f"🥩 Б: {round(total_p)} г  🧈 Ж: {round(total_f)} г  🌾 У: {round(total_c)} г")
         lines.append("\nПодтверждаешь?")
+
         save_pending("food_log", {"items": log_items}, update.message.message_id)
         await update.message.reply_text("\n".join(lines))
 
+    elif msg_type == "query_today":
+        stats = get_today_stats()
+        goals = stats.get("goals")
+
+        if not stats["items"]:
+            await update.message.reply_text("Сегодня ещё ничего не записано 🍽")
+            return
+
+        lines = [f"📅 Сегодня съел:\n"]
+        lines.extend(stats["items"])
+        lines.append(f"\n📊 Итого:")
+        lines.append(f"🔥 {stats['total_cal']} ккал")
+        lines.append(f"🥩 Белки: {stats['total_p']} г")
+        lines.append(f"🧈 Жиры: {stats['total_f']} г")
+        lines.append(f"🌾 Углеводы: {stats['total_c']} г")
+
+        if goals:
+            remaining_cal = goals["calories"] - stats["total_cal"]
+            lines.append(f"\n🎯 Осталось до цели: {remaining_cal} ккал")
+
+        await update.message.reply_text("\n".join(lines))
+
+    elif msg_type == "query_weight":
+        history = get_weight_history()
+        if not history:
+            await update.message.reply_text("Нет данных о замерах. Отправь скриншот умных весов!")
+            return
+
+        lines = ["📊 Последние замеры:\n"]
+        for row in history:
+            fat = f", жир {row['fat_percent']}%" if row.get("fat_percent") else ""
+            muscle = f", мышцы {row['muscle_percent']}%" if row.get("muscle_percent") else ""
+            lines.append(f"• {row['date']}: {row['weight']} кг{fat}{muscle}")
+
+        if len(history) >= 2:
+            first = history[-1]["weight"]
+            last = history[0]["weight"]
+            diff = round(last - first, 1)
+            sign = "+" if diff > 0 else ""
+            lines.append(f"\nДинамика: {sign}{diff} кг за {len(history)} замеров")
+
+        await update.message.reply_text("\n".join(lines))
+
+    elif msg_type == "general_chat":
+        # Answer as a health/nutrition assistant
+        stats = get_today_stats()
+        context_info = f"Сегодня пользователь съел: {stats['total_cal']} ккал, белки {stats['total_p']}г, жиры {stats['total_f']}г, углеводы {stats['total_c']}г."
+
+        system = f"""Ты персональный ассистент по здоровью, питанию и телесной рекомпозиции (снижение жира + сохранение мышц).
+Отвечай кратко, по делу, на русском языке. Ты знаешь данные пользователя:
+{context_info}
+Давай практичные советы. Будь поддерживающим и мотивирующим."""
+
+        reply = await ask_ai(system, text, model="gpt-4o-mini")
+        await update.message.reply_text(reply)
+
     else:
-        await update.message.reply_text(
-            "Я могу помочь с:\n"
-            "• Замер тела — отправь скриншот весов\n"
-            "• Продукт — напиши название и КБЖУ или фото этикетки\n"
-            "• Цели дня — напиши «посчитай цели на сегодня»\n"
-            "• Еда — напиши что съел\n"
-            "• Голосовые — говори, я пойму"
-        )
+        # Try to answer as assistant anyway
+        system = """Ты персональный ассистент по здоровью и питанию. Отвечай кратко на русском.
+Если не понял запрос, скажи что умеешь:
+- Запись еды: напиши что съел и граммы
+- Замер тела: отправь скриншот умных весов
+- Цели дня: напиши «есть тренировка» или «без тренировки»
+- Статистика: напиши «что я съел сегодня»
+- Добавить продукт: отправь фото этикетки"""
+        reply = await ask_ai(system, text, model="gpt-4o-mini")
+        await update.message.reply_text(reply)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     image_bytes = bytes(await file.download_as_bytearray())
-    await update.message.reply_text("Анализирую изображение...")
+    await update.message.reply_text("🔍 Анализирую изображение...")
 
     try:
         data = await handle_body_measurement_image(image_bytes)
@@ -366,7 +535,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"product image error: {e}")
 
-    await update.message.reply_text("Не смог распознать. Отправь скриншот весов или фото этикетки продукта.")
+    await update.message.reply_text("Не смог распознать. Отправь скриншот умных весов или фото этикетки продукта.")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,7 +551,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         os.unlink(tmp_path)
 
-    await update.message.reply_text(f"Распознал: «{text}»\n\nОбрабатываю...")
+    await update.message.reply_text(f"🎙 «{text}»")
     await process_text_message(update, context, text)
 
 
@@ -393,14 +562,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Я твой помощник по здоровью и питанию.\n\n"
-        "Что умею:\n"
-        "• Читать скриншоты умных весов\n"
-        "• Распознавать этикетки продуктов\n"
-        "• Считать дневные цели питания\n"
-        "• Записывать что ты съел\n"
-        "• Понимать голосовые сообщения\n\n"
-        "Начни с отправки скриншота весов или напиши что хочешь сделать."
+        "👋 Привет! Я твой персональный ассистент.\n\n"
+        "🍽 Питание:\n"
+        "• Напиши что съел → запишу с КБЖУ\n"
+        "• Фото этикетки → добавлю продукт\n"
+        "• «Что я съел сегодня?» → покажу статистику\n\n"
+        "💪 Здоровье:\n"
+        "• Скриншот умных весов → сохраню замер\n"
+        "• «Есть тренировка» → посчитаю цели дня\n\n"
+        "🎙 Понимаю голосовые сообщения\n\n"
+        "Что сделаем первым?"
     )
 
 
