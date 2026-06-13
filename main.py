@@ -38,6 +38,16 @@ DENY_WORDS     = ["нет", "неверно", "не то", "отмена", "canc
 MORE_WORDS     = ["нет", "не всё", "ещё", "еще", "добавлю", "подожди", "буду добавлять"]
 DONE_WORDS     = ["да", "всё", "все", "это всё", "это все", "готово", "хватит", "достаточно", "записывай", "сохраняй"]
 
+# Ответы на запрос «искать в интернете» / «добавлю сам»
+SEARCH_WEB_WORDS = [
+    "поищи", "найди", "ищи", "поиск", "интернет", "в интернете", "в сети",
+    "найди в сети", "поищи в интернете", "да поищи", "да найди", "ищи сам",
+]
+ADD_MANUAL_WORDS = [
+    "добавлю сам", "скажу сам", "введу сам", "вручную", "сам добавлю",
+    "добавить вручную", "скажу кбжу", "укажу сам", "сам укажу", "добавлю вручную",
+]
+
 # Фразы для ответов на утренний запрос взвешивания
 WEIGH_SKIP_WORDS = [
     "без взвешивания", "без скриншота", "не взвешивался", "не взвешивалась",
@@ -160,31 +170,36 @@ async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
 
 # ── Поиск КБЖУ ───────────────────────────────────────────────────────
 
-async def get_nutrition(product_name: str, grams: float) -> dict:
-    """
-    1. Ищем в нашей базе
-    2. Ищем через Tavily в интернете
-    3. Fallback — GPT оценивает по памяти
-    """
-    # 1. База продуктов
-    found = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
-    if found.data:
-        p = found.data[0]
-        ratio = grams / 100
-        return {
-            "product_name": product_name, "grams": grams,
-            "calories": round(p["calories"] * ratio, 1),
-            "protein":  round(p["protein"]  * ratio, 1),
-            "fat":      round(p["fat"]       * ratio, 1),
-            "carbs":    round(p["carbs"]     * ratio, 1),
-            "product_id": p["id"], "auto_estimated": False,
-        }
+def find_in_db(product_name: str, brand: str = None) -> dict | None:
+    """Ищет продукт в Supabase по названию (и бренду если есть)."""
+    # Поиск по имени + бренду
+    if brand:
+        rows = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(10).execute().data or []
+        for p in rows:
+            if p.get("brand") and brand.lower() in (p["brand"] or "").lower():
+                return p
+    # Только по имени
+    r = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
+    return r.data[0] if r.data else None
 
-    # 2. Поиск КБЖУ через Tavily + прямой скрапинг страницы
-    macros = None
+def save_product_to_db(name: str, brand: str | None, cal100: float,
+                       pro100: float, fat100: float, carb100: float) -> str | None:
+    """Сохраняет продукт в Supabase, возвращает id."""
+    row = {"name": name, "calories": cal100, "protein": pro100, "fat": fat100, "carbs": carb100}
+    if brand:
+        row["brand"] = brand
+    res = supabase.table("products").insert(row).execute()
+    return res.data[0]["id"] if res.data else None
+
+def calc_from_macros(pro100, fat100, carb100) -> float:
+    """Калории из макронутриентов если не указаны."""
+    return round((pro100 or 0) * 4 + (fat100 or 0) * 9 + (carb100 or 0) * 4, 1)
+
+async def search_nutrition_online(product_name: str) -> dict | None:
+    """Tavily + прямой скрапинг приоритетных сайтов. Возвращает макросы на 100г или None."""
+    import aiohttp, ssl, re
 
     async def fetch_page_text(url: str) -> str:
-        import aiohttp, ssl, re
         try:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -215,9 +230,9 @@ async def get_nutrition(product_name: str, grams: float) -> dict:
             return None
 
     PRIORITY_SITES = ["tablycjakalorijnosti.com.ua", "calorizator.ru", "fatsecret.ru"]
+    macros = None
 
     try:
-        # Пробуем три запроса: украинский, русский, английский
         queries = [
             f"{product_name} калорійність білки жири вуглеводи на 100 грам",
             f"{product_name} калорийность белки жиры углеводы на 100г КБЖУ",
@@ -227,7 +242,6 @@ async def get_nutrition(product_name: str, grams: float) -> dict:
             result = tavily.search(query=query, search_depth="advanced", max_results=5)
             results_list = result.get("results", [])
 
-            # Сначала пробуем скачать страницу с приоритетных сайтов напрямую
             for r in results_list:
                 url = r.get("url", "")
                 if any(site in url for site in PRIORITY_SITES):
@@ -236,66 +250,129 @@ async def get_nutrition(product_name: str, grams: float) -> dict:
                     if macros:
                         logger.info(f"Nutrition from {url}")
                         break
-
             if macros:
                 break
 
-            # Если приоритетных не нашли — берём весь контент из Tavily
             content = " ".join([r.get("content", "") for r in results_list])[:3000]
             macros = await macros_from_text(content)
             if macros:
                 break
-
     except Exception as e:
-        logger.warning(f"Tavily search error for {product_name}: {e}")
+        logger.warning(f"Tavily error for {product_name}: {e}")
+
+    return macros
+
+async def get_nutrition(product_name: str, grams: float, brand: str = None, unit: str = "г") -> dict:
+    """
+    Полный поиск КБЖУ: база → интернет (Tavily) → GPT-оценка.
+    Найденные данные сохраняет в базу для следующего раза.
+    """
+    # 1. Supabase
+    p = find_in_db(product_name, brand)
+    if p:
+        ratio = grams / 100
+        return {
+            "product_name": product_name, "grams": grams, "unit": unit,
+            "calories": round(p["calories"] * ratio, 1),
+            "protein":  round(p["protein"]  * ratio, 1),
+            "fat":      round(p["fat"]       * ratio, 1),
+            "carbs":    round(p["carbs"]     * ratio, 1),
+            "cal100": p["calories"], "pro100": p["protein"],
+            "fat100": p["fat"], "carb100": p["carbs"],
+            "product_id": p["id"], "auto_estimated": False,
+        }
+
+    # 2. Tavily
+    macros = await search_nutrition_online(product_name)
 
     # 3. GPT по памяти
     if not macros:
         raw = await gpt(
-            "Ты эксперт по питанию. Укажи КБЖУ продукта на 100г. Верни ТОЛЬКО JSON: {\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}",
+            "Ты эксперт по питанию. Укажи КБЖУ продукта на 100г. "
+            "Верни ТОЛЬКО JSON: {\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}",
             f"Продукт: {product_name}"
         )
         macros = parse_json(raw)
+        macros["auto_estimated"] = True
+    else:
+        macros["auto_estimated"] = False
+
+    # Сохраняем в базу для будущих запросов
+    pid = save_product_to_db(product_name, brand, macros["calories"], macros["protein"], macros["fat"], macros["carbs"])
 
     ratio = grams / 100
     return {
-        "product_name": product_name, "grams": grams,
+        "product_name": product_name, "grams": grams, "unit": unit,
         "calories": round(macros["calories"] * ratio, 1),
         "protein":  round(macros["protein"]  * ratio, 1),
         "fat":      round(macros["fat"]       * ratio, 1),
         "carbs":    round(macros["carbs"]     * ratio, 1),
         "cal100": macros["calories"], "pro100": macros["protein"],
-        "fat100": macros["fat"],      "carb100": macros["carbs"],
-        "auto_estimated": True,
+        "fat100": macros["fat"], "carb100": macros["carbs"],
+        "product_id": pid, "auto_estimated": macros.get("auto_estimated", True),
     }
 
-async def _resolve_item(item: dict) -> dict:
+async def _resolve_item(item: dict, auto_search: bool = True) -> dict:
     """
-    Разрешает один продукт: ищет в базе, потом в инете, потом GPT.
-    Если пользователь указал КБЖУ на 100г — использует их напрямую.
+    Разрешает один продукт по приоритету:
+    1. Если пользователь указал КБЖУ на 100г → сохраняем в базу + считаем
+    2. Ищем в Supabase по имени (и бренду)
+    3. auto_search=True → Tavily + GPT (для meal_session)
+    4. auto_search=False → возвращаем {"not_found": True, ...} (для food_log, чтобы спросить пользователя)
     """
     name  = item.get("name", "")
     grams = float(item.get("grams", 100))
     unit  = item.get("unit", "г")
+    brand = item.get("brand") or None
 
-    # Если пользователь передал КБЖУ на 100г — используем их
-    if item.get("cal100") is not None:
+    # Восстанавливаем cal100 из макросов если не указан явно
+    pro100  = item.get("pro100")
+    fat100  = item.get("fat100")
+    carb100 = item.get("carb100")
+    cal100  = item.get("cal100")
+    if cal100 is None and any(v is not None for v in [pro100, fat100, carb100]):
+        cal100 = calc_from_macros(pro100 or 0, fat100 or 0, carb100 or 0)
+
+    # Пользователь указал КБЖУ на 100г — сохраняем в базу и считаем
+    if cal100 is not None:
+        existing = find_in_db(name, brand)
+        if existing:
+            pid = existing["id"]
+        else:
+            pid = save_product_to_db(name, brand, cal100, pro100 or 0, fat100 or 0, carb100 or 0)
         ratio = grams / 100
         return {
-            "product_name": name, "grams": grams, "unit": unit,
-            "calories": round(item["cal100"] * ratio, 1),
-            "protein":  round((item.get("pro100") or 0) * ratio, 1),
-            "fat":      round((item.get("fat100") or 0) * ratio, 1),
-            "carbs":    round((item.get("carb100") or 0) * ratio, 1),
-            "cal100": item["cal100"], "pro100": item.get("pro100"),
-            "fat100": item.get("fat100"), "carb100": item.get("carb100"),
-            "brand": item.get("brand"), "auto_estimated": False,
+            "product_name": name, "grams": grams, "unit": unit, "brand": brand,
+            "calories": round(cal100 * ratio, 1),
+            "protein":  round((pro100 or 0) * ratio, 1),
+            "fat":      round((fat100 or 0) * ratio, 1),
+            "carbs":    round((carb100 or 0) * ratio, 1),
+            "cal100": cal100, "pro100": pro100, "fat100": fat100, "carb100": carb100,
+            "product_id": pid, "auto_estimated": False,
         }
 
-    # Иначе ищем через get_nutrition (база → интернет → GPT)
-    result = await get_nutrition(name, grams)
-    result["unit"] = unit
-    return result
+    # Проверяем базу данных
+    p = find_in_db(name, brand)
+    if p:
+        ratio = grams / 100
+        brand_display = p.get("brand") or brand
+        return {
+            "product_name": name, "grams": grams, "unit": unit, "brand": brand_display,
+            "calories": round(p["calories"] * ratio, 1),
+            "protein":  round(p["protein"]  * ratio, 1),
+            "fat":      round(p["fat"]       * ratio, 1),
+            "carbs":    round(p["carbs"]     * ratio, 1),
+            "cal100": p["calories"], "pro100": p["protein"],
+            "fat100": p["fat"], "carb100": p["carbs"],
+            "product_id": p["id"], "auto_estimated": False,
+        }
+
+    # Продукт не найден в базе
+    if not auto_search:
+        return {"not_found": True, "name": name, "brand": brand, "grams": grams, "unit": unit}
+
+    # auto_search=True: Tavily + GPT (для meal_session)
+    return await get_nutrition(name, grams, brand=brand, unit=unit)
 
 # ── Классификатор ─────────────────────────────────────────────────────
 
@@ -320,40 +397,43 @@ async def classify(text: str) -> dict:
 ТИПЫ:
 
 "meal_session" — пользователь описывает приём пищи с НЕСКОЛЬКИМИ продуктами (готовит, перечисляет ингредиенты, делает шаурму/салат/ужин)
-data: {{"meal_type":"завтрак/обед/ужин/перекус", "items":[{{"name":"продукт","grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+data: {{"meal_type":"завтрак/обед/ужин/перекус", "items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
 cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г/100мл, иначе null
+brand — заполни если упомянут бренд/марка, иначе null
 unit: "мл" для НАПИТКОВ (вода, сок, кефир, молоко, кола, энергетик, чай, кофе, смузи, йогурт питьевой и любые жидкости), "г" для всего остального
 Примеры:
-"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session (всё unit:"г")
-"на обед: гречка 200г и куриная грудка 150г и огурец 100г" → meal_session (всё unit:"г")
-"завтрак: овсянка 100г, молоко 200мл, апельсиновый сок 250мл" → meal_session (овсянка unit:"г", молоко и сок unit:"мл")
+"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session
+"на обед: гречка 200г и куриная грудка 150г и огурец 100г" → meal_session
+"лаваш Кулиничі 80г (на 100г: белки 10, жиры 4, угл 55), курица 300г" → meal_session, лаваш имеет brand:"Кулиничі", pro100:10, fat100:4, carb100:55
 
-"food_log" — ОДИН или ДВА продукта, человек просто говорит что съел/выпил без контекста приготовления
-data: [{{"name":"название", "grams": число, "unit": "г или мл"}}]
+"food_log" — ОДИН или ДВА продукта, человек говорит что съел/выпил
+data: [{{"name":"название", "brand": null или "бренд", "grams": число, "unit": "г или мл", "cal100":null,"pro100":null,"fat100":null,"carb100":null}}]
+cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г, иначе null
+brand — заполни если упомянут бренд/марка, иначе null
 unit: "мл" для НАПИТКОВ (вода, сок, кефир, молоко, кола, энергетик, чай, кофе и любые жидкости), "г" для еды
+grams: если не указаны — оцени разумное количество (яблоко ≈ 150г, сникерс ≈ 55г, стакан воды ≈ 250мл)
 Примеры:
-"съел сникерс" → food_log unit:"г"
-"съел 200г гречки и курицу 150г" → food_log (только 2 продукта, оба unit:"г")
-"буду кушать милкивей" → food_log unit:"г"
-"я съел курицу 600 грамм, посчитай калории" → food_log unit:"г"
-"выпил Red Bull 250мл" → food_log unit:"мл"
-"выпил стакан молока" → food_log unit:"мл", grams:250
-"выпил кефир 200г" → food_log unit:"мл" (кефир — напиток, конвертируем г→мл)
-ВАЖНО: если человек называет конкретный продукт + граммы/мл + просит посчитать — это food_log, НЕ query
+"съел сникерс" → [{{"name":"Сникерс","brand":null,"grams":55,"unit":"г","cal100":null,...}}]
+"съел яблоко" → [{{"name":"яблоко","brand":null,"grams":150,"unit":"г","cal100":null,...}}]
+"выпил Red Bull 250мл" → [{{"name":"Red Bull","brand":"Red Bull","grams":250,"unit":"мл","cal100":null,...}}]
+"лаваш армянский Кулиничі, на 100г белки 10г жиры 4г угл 55г, беру 800г" → [{{"name":"лаваш армянский","brand":"Кулиничі","grams":800,"unit":"г","cal100":null,"pro100":10,"fat100":4,"carb100":55}}]
+"съел 200г гречки и курицу 150г" → 2 элемента в data
+ВАЖНО: если человек называет продукт + КБЖУ на 100г + граммы — это food_log с заполненными pro100/fat100/carb100, НЕ add_product
 
 "food_clarify" — уточнение граммов к предыдущему запросу еды (просто число или "N грамм/г")
 data: {{"grams": число}}
 Примеры: "100 грамм", "150г", "съел 80г"
 
-"food_log_known_macros" — пользователь говорит что СЪЕЛ + граммы + называет КБЖУ для этого количества
-data: {{"name":"...", "grams": число, "calories": число (для указанных грамм), "protein": число, "fat": число, "carbs": число}}
+"food_log_known_macros" — пользователь говорит что СЪЕЛ + граммы + называет КБЖУ ИМЕННО ДЛЯ ЭТОГО КОЛИЧЕСТВА (не на 100г)
+data: {{"name":"...", "brand":null, "grams": число, "calories": число (для указанных грамм), "protein": число, "fat": число, "carbs": число}}
 Примеры:
 "съел батончик Lion 42г, 210 ккал, белков 2.65, жиров 10, углеводов 27" → food_log_known_macros (КБЖУ дан для 42г)
 "съел творог 150г, там 180 ккал, белка 25г" → food_log_known_macros
 
-"add_product" — пользователь хочет ДОБАВИТЬ продукт в базу БЕЗ упоминания что съел, называет КБЖУ на 100г
+"add_product" — пользователь явно просит ДОБАВИТЬ продукт в базу или отвечает на вопрос бота «укажи КБЖУ на 100г»
 data: {{"name":"...", "brand":null, "calories":..., "protein":..., "fat":..., "carbs":...}}
 Пример: "добавь в базу: творог Простоквашино, на 100г — 100 ккал, белок 18г" → add_product
+Пример ответа на запрос бота: "калории 250, белки 8г, жиры 3г, углеводы 45г" → add_product (имя возьми из контекста)
 
 "body_measurement" — замеры тела текстом
 data: {{"weight":null,"bmi":null,"fat_percent":null,"muscle_percent":null,...}}
@@ -833,6 +913,127 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         )
         return
 
+    # ── product_lookup_choice: ожидаем ответ — искать онлайн или добавить вручную ──
+    if pending and pending["type"] == "product_lookup_choice":
+        pdata        = pending["data"]
+        p_name       = pdata["product_name"]
+        p_brand      = pdata.get("brand")
+        p_grams      = float(pdata["grams"])
+        p_unit       = pdata.get("unit", "г")
+        done_items   = pdata.get("resolved_items", [])
+        manual_mode  = pdata.get("manual_mode", False)
+
+        brand_str = f" ({p_brand})" if p_brand else ""
+
+        # В режиме ожидания КБЖУ от пользователя (после «добавлю сам»)
+        # или пользователь сразу дал КБЖУ в ответ
+        try:
+            c_inner = await classify(text)
+            inner_type = c_inner.get("type")
+            inner_data = c_inner.get("data", {})
+        except:
+            inner_type = None
+            inner_data = {}
+
+        # Пользователь предоставил КБЖУ (на 100г или на факт. граммы)
+        if inner_type == "add_product" or manual_mode:
+            if inner_type == "food_log_known_macros":
+                g = float(inner_data.get("grams", p_grams))
+                r = 100 / g if g else 1
+                cal100  = round(float(inner_data.get("calories", 0)) * r, 1)
+                pro100  = round(float(inner_data.get("protein",  0)) * r, 1)
+                fat100  = round(float(inner_data.get("fat",      0)) * r, 1)
+                carb100 = round(float(inner_data.get("carbs",    0)) * r, 1)
+            elif inner_type == "add_product":
+                cal100  = float(inner_data.get("calories", 0))
+                pro100  = float(inner_data.get("protein",  0))
+                fat100  = float(inner_data.get("fat",      0))
+                carb100 = float(inner_data.get("carbs",    0))
+                p_brand = inner_data.get("brand") or p_brand
+            elif manual_mode:
+                # Пробуем распарсить числа из сообщения через GPT
+                raw_m = await gpt(
+                    "Пользователь называет КБЖУ на 100г продукта. Верни ТОЛЬКО JSON: "
+                    "{\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число, \"brand\": null}. "
+                    "Если данных нет — верни {\"calories\": null}.",
+                    f"Продукт: {p_name}\nСообщение: {text}"
+                )
+                try:
+                    d_m = parse_json(raw_m)
+                    if not d_m.get("calories"):
+                        await update.message.reply_text(
+                            f"Не смог распознать КБЖУ. Напиши, например:\n"
+                            f"«на 100г: 250 ккал, белки 8г, жиры 3г, углеводы 45г»"
+                        )
+                        return
+                    cal100  = float(d_m["calories"])
+                    pro100  = float(d_m.get("protein", 0))
+                    fat100  = float(d_m.get("fat", 0))
+                    carb100 = float(d_m.get("carbs", 0))
+                    p_brand = d_m.get("brand") or p_brand
+                except:
+                    await update.message.reply_text("Не смог распознать. Напиши КБЖУ на 100г числами.")
+                    return
+            else:
+                await update.message.reply_text(
+                    f"Напиши КБЖУ на 100г для «{p_name}».\n"
+                    f"Например: «на 100г: 250 ккал, белки 8г, жиры 3г, углеводы 45г»"
+                )
+                return
+
+            clear_pending(pending["id"])
+            pid = save_product_to_db(p_name, p_brand, cal100, pro100, fat100, carb100)
+            ratio = p_grams / 100
+            new_item = {
+                "product_name": p_name, "grams": p_grams, "unit": p_unit, "brand": p_brand,
+                "calories": round(cal100 * ratio, 1), "protein": round(pro100 * ratio, 1),
+                "fat": round(fat100 * ratio, 1),      "carbs": round(carb100 * ratio, 1),
+                "cal100": cal100, "pro100": pro100, "fat100": fat100, "carb100": carb100,
+                "product_id": pid, "auto_estimated": False,
+            }
+            all_items = done_items + [new_item]
+            save_pending("food_log", {"items": all_items}, update.message.message_id)
+            await update.message.reply_text(
+                f"✅ Продукт «{p_name}{brand_str}» сохранён в базу!\n\n" + fmt_food(all_items),
+                parse_mode="Markdown"
+            )
+            return
+
+        # Пользователь хочет поискать в интернете
+        if any(w in t_low for w in SEARCH_WEB_WORDS):
+            clear_pending(pending["id"])
+            await update.message.reply_text(f"⏳ Ищу «{p_name}» в интернете...")
+            try:
+                result = await get_nutrition(p_name, p_grams, brand=p_brand, unit=p_unit)
+                all_items = done_items + [result]
+                save_pending("food_log", {"items": all_items}, update.message.message_id)
+                await update.message.reply_text(fmt_food(all_items), parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"online search error: {e}")
+                await update.message.reply_text("Не смог найти в интернете. Напиши КБЖУ сам.")
+            return
+
+        # Пользователь хочет добавить вручную
+        if any(w in t_low for w in ADD_MANUAL_WORDS):
+            # Обновляем флаг manual_mode и просим КБЖУ
+            pdata["manual_mode"] = True
+            save_pending("product_lookup_choice", pdata, update.message.message_id)
+            await update.message.reply_text(
+                f"Хорошо! Напиши КБЖУ на 100г для «{p_name}{brand_str}».\n\n"
+                f"Например: «на 100г: 250 ккал, белки 8г, жиры 3г, углеводы 45г»"
+            )
+            return
+
+        # Не поняли ответ
+        await update.message.reply_text(
+            f"Продукт «{p_name}{brand_str}» не найден в базе.\n\n"
+            f"• Напиши *«поищи»* — найду в интернете\n"
+            f"• Напиши *«добавлю сам»* — укажи КБЖУ на 100г\n"
+            f"• Или сразу: «на 100г: 250 ккал, белки 8г, жиры 3г, углеводы 45г»",
+            parse_mode="Markdown"
+        )
+        return
+
     # ── Общий confirm/deny для остальных pending ──
     if pending:
         if is_confirm(text):
@@ -861,11 +1062,10 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         new_grams = float(data.get("grams", 100))
         items = pending["data"].get("items", [])
         if items:
-            old_name  = items[0]["product_name"]
             old_grams = items[0]["grams"]
-            await update.message.reply_text(f"⏳ Пересчитываю на {new_grams}г...")
-            # Пересчитываем через коэффициент
             if old_grams and old_grams != new_grams:
+                unit_lbl = items[0].get("unit", "г")
+                await update.message.reply_text(f"⏳ Пересчитываю на {new_grams}{unit_lbl}...")
                 ratio = new_grams / old_grams
                 items[0]["grams"]    = new_grams
                 items[0]["calories"] = round((items[0].get("calories") or 0) * ratio, 1)
@@ -882,22 +1082,46 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         if not raw:
             await update.message.reply_text("Не понял что ты съел. Напиши например: «съел 200г гречки и куриную грудку 150г»")
             return
-        await update.message.reply_text("⏳ Ищу КБЖУ...")
-        items = []
+
+        await update.message.reply_text("⏳ Проверяю базу продуктов...")
+        resolved = []
+        not_found = None
+
         for item in raw:
             try:
-                result = await get_nutrition(item["name"], float(item.get("grams", 100)))
-                result["unit"] = item.get("unit", "г")
-                items.append(result)
+                result = await _resolve_item(item, auto_search=False)
+                if result.get("not_found"):
+                    not_found = result
+                    break
+                resolved.append(result)
             except Exception as e:
-                logger.error(f"get_nutrition error for {item}: {e}")
-        if not items:
-            await update.message.reply_text("Не смог найти КБЖУ. Попробуй ещё раз или уточни название.")
-            return
-        save_pending("food_log", {"items": items}, update.message.message_id)
-        await update.message.reply_text(fmt_food(items), parse_mode="Markdown")
+                logger.error(f"resolve error for {item}: {e}")
 
-    # ── food_log_known_macros: съел X г + сам назвал КБЖУ ──
+        if not_found:
+            brand = not_found.get("brand")
+            brand_str = f" ({brand})" if brand else ""
+            save_pending("product_lookup_choice", {
+                "product_name": not_found["name"],
+                "brand": brand,
+                "grams": not_found["grams"],
+                "unit": not_found.get("unit", "г"),
+                "resolved_items": resolved,
+                "manual_mode": False,
+            }, update.message.message_id)
+            await update.message.reply_text(
+                f"🔍 Продукта «{not_found['name']}{brand_str}» нет в моей базе.\n\n"
+                f"Что делаем?\n"
+                f"• Напиши *«поищи»* — найду данные в интернете\n"
+                f"• Напиши *«добавлю сам»* — укажи бренд и КБЖУ на 100г\n"
+                f"• Или сразу напиши КБЖУ: «на 100г: 250 ккал, белки 8г, жиры 3г, углеводы 45г»",
+                parse_mode="Markdown"
+            )
+            return
+
+        save_pending("food_log", {"items": resolved}, update.message.message_id)
+        await update.message.reply_text(fmt_food(resolved), parse_mode="Markdown")
+
+    # ── food_log_known_macros: съел X г + КБЖУ указан для этого количества ──
     elif msg_type == "food_log_known_macros":
         grams    = float(data.get("grams", 100))
         calories = float(data.get("calories", 0))
@@ -905,25 +1129,30 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         fat      = float(data.get("fat", 0))
         carbs    = float(data.get("carbs", 0))
         name     = data.get("name", "продукт")
+        brand    = data.get("brand")
         unit     = data.get("unit", "г")
 
-        # Пересчитываем на 100г для сохранения в базу продуктов
         ratio100 = 100 / grams if grams else 1
         cal100   = round(calories * ratio100, 1)
         pro100   = round(protein  * ratio100, 1)
         fat100   = round(fat      * ratio100, 1)
         carb100  = round(carbs    * ratio100, 1)
 
+        # Сохраняем продукт в базу если его нет
+        existing = find_in_db(name, brand)
+        if not existing:
+            save_product_to_db(name, brand, cal100, pro100, fat100, carb100)
+
         item = {
-            "product_name": name, "grams": grams, "unit": unit,
+            "product_name": name, "grams": grams, "unit": unit, "brand": brand,
             "calories": calories, "protein": protein, "fat": fat, "carbs": carbs,
             "cal100": cal100, "pro100": pro100, "fat100": fat100, "carb100": carb100,
-            "auto_estimated": True,
+            "auto_estimated": False,
         }
         save_pending("food_log", {"items": [item]}, update.message.message_id)
         await update.message.reply_text(
             f"📝 *Записать в дневник?*\n\n"
-            f"• {name}: {grams}г — {round(calories)} ккал\n"
+            f"• {name}: {grams}{unit} — {round(calories)} ккал\n"
             f"  Б {round(protein)}г | Ж {round(fat)}г | У {round(carbs)}г\n\n"
             f"_(сохраню в базу на 100г: {cal100} ккал | Б {pro100}г | Ж {fat100}г | У {carb100}г)_\n\n"
             f"Подтверждаешь?", parse_mode="Markdown"
