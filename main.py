@@ -37,6 +37,21 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 
 TZ = pytz.timezone(TIMEZONE)
 
+# ── Кэш продуктов ─────────────────────────────────────────────────────
+_products_cache: list = []
+
+def load_products_cache():
+    global _products_cache
+    try:
+        _products_cache = supabase.table("products").select("*").execute().data or []
+        logger.info(f"Продукты загружены в кэш: {len(_products_cache)} шт.")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки кэша продуктов: {e}")
+
+def refresh_products_cache():
+    """Вызывается после добавления нового продукта в БД."""
+    load_products_cache()
+
 CONFIRM_WORDS  = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "давай", "сохрани", "конечно", "го", "ага"]
 DENY_WORDS     = ["нет", "неверно", "не то", "отмена", "cancel", "no", "стоп", "не надо", "отмени"]
 MORE_WORDS     = ["нет", "не всё", "ещё", "еще", "добавлю", "подожди", "буду добавлять"]
@@ -132,6 +147,15 @@ def save_pending(action_type: str, data: dict, msg_id=None):
         "telegram_message_id": str(msg_id) if msg_id else None
     }).execute()
 
+async def notify_error(bot, text: str):
+    """Шлёт сообщение об ошибке в Telegram."""
+    try:
+        chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
+        if chat_id:
+            await bot.send_message(chat_id=chat_id, text=f"⚠️ *Ошибка бота:*\n`{text[:400]}`", parse_mode="Markdown")
+    except Exception:
+        pass
+
 def parse_json(text: str) -> dict:
     text = text.strip()
     if "```" in text:
@@ -185,14 +209,25 @@ async def gpt_vision(image_bytes: bytes, prompt: str) -> str:
 # ── Поиск КБЖУ ───────────────────────────────────────────────────────
 
 def find_in_db(product_name: str, brand: str = None) -> dict | None:
-    """Ищет продукт в Supabase по названию (и бренду если есть)."""
-    # Поиск по имени + бренду
+    """Ищет продукт сначала в кэше, потом в Supabase."""
+    name_lower = product_name.lower()
+
+    # Поиск в кэше
+    if _products_cache:
+        candidates = [p for p in _products_cache if name_lower in (p.get("name") or "").lower()]
+        if brand and candidates:
+            for p in candidates:
+                if p.get("brand") and brand.lower() in (p["brand"] or "").lower():
+                    return p
+        if candidates:
+            return candidates[0]
+
+    # Fallback в Supabase (если кэш пуст или не нашли)
     if brand:
         rows = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(10).execute().data or []
         for p in rows:
             if p.get("brand") and brand.lower() in (p["brand"] or "").lower():
                 return p
-    # Только по имени
     r = supabase.table("products").select("*").ilike("name", f"%{product_name}%").limit(1).execute()
     return r.data[0] if r.data else None
 
@@ -240,6 +275,7 @@ def save_product_to_db(name: str, brand: str | None, cal100: float,
     if brand:       row["brand"] = brand
     if source:      row["data_source"] = source
     res = supabase.table("products").insert(row).execute()
+    refresh_products_cache()
     return res.data[0]["id"] if res.data else None
 
 def calc_from_macros(pro100, fat100, carb100) -> float:
@@ -756,6 +792,7 @@ async def save_action(pending: dict) -> str:
                         "fat":      it.get("fat100"),
                         "carbs":    it.get("carb100"),
                     }).execute()
+                    refresh_products_cache()
 
         total_cal = round(sum(it.get("calories") or 0 for it in items))
         total_p   = round(sum(it.get("protein")  or 0 for it in items))
@@ -818,6 +855,7 @@ async def save_action(pending: dict) -> str:
             "fat":      data.get("fat"),
             "carbs":    data.get("carbs"),
         }).execute()
+        refresh_products_cache()
         return f"✅ Продукт «{data.get('name')}» добавлен в базу!"
 
     if t == "body_measurement":
@@ -1274,6 +1312,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         data     = c.get("data", {})
     except Exception as e:
         logger.error(f"classify error: {e}")
+        await notify_error(context.bot, f"classify: {e}\nТекст: {text[:200]}")
         await update.message.reply_text("⚠️ Не понял запрос. Попробуй ещё раз.")
         return
 
@@ -2032,6 +2071,9 @@ def main():
     scheduler.add_job(send_weekly_summary,  "cron", day_of_week="sun", hour=22, minute=0,   args=[app.bot])
     scheduler.add_job(send_monthly_summary, "cron", day=1,              hour=15, minute=0,   args=[app.bot])
     scheduler.start()
+
+    # Загружаем кэш продуктов при старте
+    load_products_cache()
 
     logger.info("Bot started")
     app.run_polling(drop_pending_updates=True)
