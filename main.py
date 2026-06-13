@@ -38,6 +38,19 @@ DENY_WORDS     = ["нет", "неверно", "не то", "отмена", "canc
 MORE_WORDS     = ["нет", "не всё", "ещё", "еще", "добавлю", "подожди", "буду добавлять"]
 DONE_WORDS     = ["да", "всё", "все", "это всё", "это все", "готово", "хватит", "достаточно", "записывай", "сохраняй"]
 
+# Фразы для ответов на утренний запрос взвешивания
+WEIGH_SKIP_WORDS = [
+    "без взвешивания", "без скриншота", "не взвешивался", "не взвешивалась",
+    "сегодня не взвеш", "не буду взвешивать", "пропущу взвешивание",
+    "без замера", "не замерялся", "нет взвешивания",
+]
+WEIGH_LATER_WORDS = [
+    "скину позже", "скину потом", "отправлю позже", "отправлю потом",
+    "скину взвешивание", "скину скриншот", "позже скину", "потом скину",
+    "ночевал не дома", "не дома", "не могу взвеситься", "взвешусь позже",
+    "взвешусь потом", "отправлю в течение", "пришлю позже", "пришлю потом",
+]
+
 MEAL_TYPE_MAP  = {
     "завтрак": "завтрак", "breakfast": "завтрак",
     "обед": "обед", "lunch": "обед",
@@ -75,6 +88,28 @@ def get_pending():
 
 def clear_pending(pid: str):
     supabase.table("pending_actions").update({"status": "done"}).eq("id", pid).execute()
+
+def get_weigh_pending():
+    """Проверяем — ждём ли сегодня скриншот взвешивания."""
+    today = today_str()
+    r = supabase.table("pending_actions").select("*") \
+        .eq("type", "weigh_morning").eq("status", "pending") \
+        .gte("created_at", f"{today}T00:00:00").limit(1).execute()
+    return r.data[0] if r.data else None
+
+def clear_weigh_pending(status: str = "done"):
+    today = today_str()
+    supabase.table("pending_actions").update({"status": status}) \
+        .eq("type", "weigh_morning").eq("status", "pending") \
+        .gte("created_at", f"{today}T00:00:00").execute()
+
+def is_weigh_skip(text: str) -> bool:
+    t = text.lower().strip()
+    return any(w in t for w in WEIGH_SKIP_WORDS)
+
+def is_weigh_later(text: str) -> bool:
+    t = text.lower().strip()
+    return any(w in t for w in WEIGH_LATER_WORDS)
 
 def save_pending(action_type: str, data: dict, msg_id=None):
     supabase.table("pending_actions").update({"status": "expired"}).eq("status", "pending").execute()
@@ -731,6 +766,24 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
     pending = get_pending()
     t_low   = text.lower().strip()
 
+    # ── weigh_morning: ответы на утренний запрос взвешивания ──
+    # Не блокирует другие действия — просто перехватываем целевые фразы
+    weigh = get_weigh_pending()
+    if weigh:
+        if is_weigh_skip(t_low):
+            clear_weigh_pending("skipped")
+            await update.message.reply_text(
+                "Хорошо, сегодня без взвешивания 👌\n"
+                "Если передумаешь — просто пришли скриншот в любое время."
+            )
+            return
+        if is_weigh_later(t_low):
+            await update.message.reply_text(
+                "Хорошо! Буду ждать скриншот взвешивания в течение дня 📱\n"
+                "Как взвесишься — просто пришли фото."
+            )
+            return
+
     # ── meal_session: ВСЕГДА проверяем первым ──
     # чтобы «нет» = «жду ещё продукты», а не «отмена»
     if pending and pending["type"] == "meal_session":
@@ -1014,6 +1067,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d = parse_json(raw)
         if d.get("weight"):
             save_pending("body_measurement", d, update.message.message_id)
+            # Закрываем утренний запрос взвешивания
+            clear_weigh_pending("done")
             await update.message.reply_text(fmt_measurement(d), parse_mode="Markdown")
             return
     except Exception as e:
@@ -1074,6 +1129,51 @@ async def check_reminders(bot: Bot):
         except Exception as e:
             logger.error(f"reminder send error: {e}")
 
+async def send_morning_message(bot: Bot):
+    chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
+    if not chat_id:
+        return
+
+    today = today_str()
+
+    # Не отправляем если уже слали сегодня
+    existing = supabase.table("pending_actions").select("id") \
+        .eq("type", "weigh_morning") \
+        .gte("created_at", f"{today}T00:00:00").execute()
+    if existing.data:
+        return
+
+    now = now_local()
+    day_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now.weekday()]
+
+    try:
+        text = await gpt(
+            "Ты личный ИИ-ассистент. Напиши утреннее сообщение для пользователя по имени Дима. "
+            "Сообщение должно: 1) пожелать доброго утра тепло и по-дружески, "
+            "2) дать короткую мотивацию на продуктивный день (каждый раз разную — цитата, мысль или просто слова), "
+            "3) напомнить что бот ждёт задачи на сегодня, записи продуктов, расходов и доходов, "
+            "4) попросить прислать скриншот взвешивания. "
+            "Пиши на русском, без звёздочек и форматирования. 4-6 предложений. "
+            "Каждый раз формулировки должны быть немного разными.",
+            f"Сегодня {day_ru}, {now.strftime('%d.%m.%Y')}. Напиши утреннее сообщение для Димы."
+        )
+    except Exception as e:
+        logger.error(f"morning message gpt error: {e}")
+        text = (
+            f"Доброе утро, Дима! Желаю тебе продуктивного {day_ru}а и хорошего настроения.\n\n"
+            "Жду от тебя задачи на сегодня, записи продуктов, расходов и доходов.\n\n"
+            "Также жду скриншот взвешивания — просто пришли его сюда 📊"
+        )
+
+    await bot.send_message(chat_id=chat_id, text=f"🌅 {text}")
+
+    # Запоминаем что ждём скриншот
+    supabase.table("pending_actions").insert({
+        "type": "weigh_morning",
+        "data": {"date": today},
+        "status": "pending",
+    }).execute()
+
 async def send_daily_summary(bot: Bot):
     chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
     if not chat_id:
@@ -1094,8 +1194,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
-    scheduler.add_job(check_reminders, "interval", minutes=1, args=[app.bot])
-    scheduler.add_job(send_daily_summary, "cron", hour=21, minute=0, args=[app.bot])
+    scheduler.add_job(check_reminders,      "interval", minutes=1,           args=[app.bot])
+    scheduler.add_job(send_morning_message, "cron", hour=10, minute=0,       args=[app.bot])
+    scheduler.add_job(send_daily_summary,   "cron", hour=21, minute=0,       args=[app.bot])
     scheduler.start()
 
     logger.info("Bot started")
