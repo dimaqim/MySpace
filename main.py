@@ -711,7 +711,7 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             f"📝 *Записать в дневник?*\n\n"
             f"• {name}: {grams}г — {round(calories)} ккал\n"
             f"  Б {round(protein)}г | Ж {round(fat)}г | У {round(carbs)}г\n\n"
-            f"_(также сохраню продукт: {cal100} ккал на 100г)_\n\n"
+            f"_(сохраню в базу на 100г: {cal100} ккал | Б {pro100}г | Ж {fat100}г | У {carb100}г)_\n\n"
             f"Подтверждаешь?", parse_mode="Markdown"
         )
 
