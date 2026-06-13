@@ -1069,7 +1069,11 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             await update.message.reply_text("Не понял. Добавь продукты или напиши «да» чтобы сохранить ужин.")
             return
 
-        if msg_type in ("food_log", "meal_session"):
+        # Если пришёл новый полноценный приём пищи — сбрасываем старый pending
+        if msg_type == "multi_meal":
+            clear_pending(pending["id"])
+            # передаём управление дальше — обработчик multi_meal ниже
+        elif msg_type in ("food_log", "meal_session"):
             new_raw = data if isinstance(data, list) else data.get("items", [])
             if new_raw:
                 await update.message.reply_text("⏳ Ищу КБЖУ для новых продуктов...")
@@ -1083,16 +1087,16 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
                 save_pending("meal_session", pending["data"], update.message.message_id)
                 await update.message.reply_text(fmt_meal_session(pending["data"]), parse_mode="Markdown")
                 return
-
-        # Если написал что-то не связанное с едой — уточняем
-        await update.message.reply_text(
-            "У тебя открыт приём пищи.\n\n"
-            "Напиши продукты чтобы добавить, или:\n"
-            "• *«да»* — сохранить как есть\n"
-            "• *«отмена»* — отменить",
-            parse_mode="Markdown"
-        )
-        return
+        else:
+            # Если написал что-то не связанное с едой — уточняем
+            await update.message.reply_text(
+                "У тебя открыт приём пищи.\n\n"
+                "Напиши продукты чтобы добавить, или:\n"
+                "• *«да»* — сохранить как есть\n"
+                "• *«отмена»* — отменить",
+                parse_mode="Markdown"
+            )
+            return
 
     # ── product_lookup_choice: ожидаем ответ — искать онлайн или добавить вручную ──
     if pending and pending["type"] == "product_lookup_choice":
@@ -1241,6 +1245,11 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         reply = await gpt("Ты личный ассистент. Ответь кратко на русском.", text)
         await update.message.reply_text(reply)
         return
+
+    # Если пришёл новый multi_meal при открытом pending — сбрасываем старый
+    if msg_type == "multi_meal" and pending and pending["type"] in ("food_log", "multi_meal", "meal_session"):
+        clear_pending(pending["id"])
+        pending = None
 
     # ── food_clarify: уточнение граммов ──
     if msg_type == "food_clarify" and pending and pending["type"] == "food_log":
