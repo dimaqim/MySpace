@@ -539,14 +539,17 @@ async def classify(text: str) -> dict:
 "query_weight" data: {{"from_date":null}}
 
 "delete_food_log" data: {{"date":"{today}","meal_type":null,"product_name":null}}
-• date: сегодня={today}, вчера={yesterday}
-• meal_type: "завтрак/обед/ужин/перекус" если указан, иначе null
-• product_name: конкретный продукт если указан, иначе null (удалить весь приём)
-• "удали последнюю запись" → date={today}, meal_type=null, product_name=null
-• "удали завтрак" → date={today}, meal_type="завтрак", product_name=null
-• "удали вчерашний ужин" → date={yesterday}, meal_type="ужин", product_name=null
-• "удали Red Bull из завтрака" → date={today}, meal_type="завтрак", product_name="Red Bull"
-• "удали курицу" → date={today}, meal_type=null, product_name="курица"
+• Триггеры: "удали", "сотри", "убери", "отмени запись", "стёр", "убери запись"
+• date: сегодня={today}, вчера={yesterday}. Слова "вчера"→{yesterday}, "сегодня"→{today}
+• meal_type: "завтрак/обед/ужин/перекус" если упомянут, иначе null
+• product_name: название продукта если упомянут, иначе null
+• "удали последнюю запись" → {{"date":"{today}","meal_type":null,"product_name":null}}
+• "удали завтрак" → {{"date":"{today}","meal_type":"завтрак","product_name":null}}
+• "удали вчерашний ужин" → {{"date":"{yesterday}","meal_type":"ужин","product_name":null}}
+• "удали то что я вчера пил" → {{"date":"{yesterday}","meal_type":null,"product_name":null}}
+• "удали вчерашний Red Bull" → {{"date":"{yesterday}","meal_type":null,"product_name":"Red Bull"}}
+• "удали то что я вчера пил банку редбула" → {{"date":"{yesterday}","meal_type":null,"product_name":"Red Bull"}}
+• "удали курицу из обеда" → {{"date":"{today}","meal_type":"обед","product_name":"курица"}}
 
 "general_chat" data: {{}}
 • ТОЛЬКО если ничего выше не подходит (вопросы не про еду/здоровье/финансы)"""
@@ -1793,7 +1796,7 @@ def get_food_history(query_date: str, meal_type: str = None) -> str:
         # Группируем по приёму пищи
         by_meal: dict = {}
         for r in food:
-            mt = r.get("meal_type") or "прочее"
+            mt = r.get("meal_type") or "без приёма"
             by_meal.setdefault(mt, []).append(r)
         if not food:
             return f"{header}\nНичего не записано."
