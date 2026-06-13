@@ -454,145 +454,86 @@ async def classify(text: str) -> dict:
     end_of_week    = (now + timedelta(days=days_to_sunday)).strftime("%Y-%m-%d")
     next_monday    = (now + timedelta(days=7 - weekday)).strftime("%Y-%m-%d")
 
-    system = f"""Ты классификатор персонального ассистента. Сегодня: {now.strftime('%A %d %B %Y %H:%M')} (timezone: {TIMEZONE}).
+    today   = now.strftime('%Y-%m-%d')
+    system = f"""Ты классификатор сообщений для личного трекера здоровья и финансов. Сегодня {today}, вчера {yesterday}.
+Верни ТОЛЬКО JSON: {{"type":"...", "data":...}}
 
-Полезные даты:
-- Завтра: {tomorrow}
-- Конец этой недели (воскресенье): {end_of_week}
-- Начало следующей недели (понедельник): {next_monday}
+═══ ПРАВИЛО №1 — ЕДА И ПИТЬЁ (ВЫСШИЙ ПРИОРИТЕТ) ═══
+Если в сообщении есть слова: съел, выпил, поел, попил, скушал, скушала, перекусил, употребил, выпила, съела, поела —
+это ВСЕГДА один из типов еды (food_log / meal_session / multi_meal). НИКОГДА general_chat.
 
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА (всегда в приоритете):
-1. Любая фраза "съел", "выпил", "поел", "попил", "скушал", "употребил" + название еды/напитка = ВСЕГДА food_log или meal_session или multi_meal. НИКОГДА не general_chat.
-2. "выпил банку Red Bull Zero" / "выпил Red Bull Zero" / "выпил Red Bull" = food_log, grams=250, unit="мл", name="Red Bull Zero"
-3. "выпил банку Red Bull арбуз" / "Red Bull Watermelon" = food_log, grams=250, unit="мл", name="Red Bull Watermelon"
-4. "выпил банку Red Bull тропик" / "Red Bull Tropical" = food_log, grams=250, unit="мл", name="Red Bull Tropical"
-5. Если человек перечисляет несколько приёмов пищи (завтрак + обед, или завтрак + ужин) = multi_meal.
-6. Если один приём пищи с несколькими продуктами = meal_session.
-7. Если 1-2 продукта без уточнения приёма = food_log.
+Как выбрать тип еды:
+• 1-2 продукта в одном приёме → "food_log"
+• 3+ продукта в одном приёме пищи → "meal_session"
+• Несколько приёмов сразу (завтрак + обед, обед + ужин и т.д.) → "multi_meal"
 
-Определи тип сообщения и верни ТОЛЬКО JSON без лишнего текста.
+═══ ФОРМАТЫ ═══
 
-ТИПЫ:
+"food_log" data: {{"date":"{today}","meal_type":null,"items":[{{"name":"...","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+• unit: "мл" для любых напитков, "г" для еды
+• grams если не указано: яблоко=150г, банан=120г, сникерс=55г, стакан=250мл, кружка=300мл
+• Red Bull всегда 1 банка = 250мл:
+  - "выпил Red Bull" / "банку Red Bull Zero" / "Red Bull Zero" → name="Red Bull Zero", grams=250, unit="мл"
+  - "Red Bull арбуз" / "Red Bull Watermelon" → name="Red Bull Watermelon", grams=250, unit="мл"
+  - "Red Bull тропик" / "Red Bull Tropical" → name="Red Bull Tropical", grams=250, unit="мл"
+  - "2 банки Red Bull Zero" → grams=500
+• Примеры: "съел яблоко"→яблоко 150г, "выпил кофе"→кофе 250мл, "выпил одну банку Red Bull Zero"→Red Bull Zero 250мл
 
-"multi_meal" — пользователь описывает НЕСКОЛЬКО приёмов пищи в одном сообщении (завтрак И обед, или завтрак/обед/ужин сразу)
-data: {{"meals":[{{"meal_type":"завтрак/обед/ужин/перекус","date":"{now.strftime('%Y-%m-%d')}","items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}]}}
-Примеры:
-"на завтрак съел лаваш 80г и помидор 300г, на обед курицу 300г" → multi_meal, meals:[{{завтрак: лаваш+помидор}}, {{обед: курица}}]
-"сегодня завтрак: овсянка 100г. обед: гречка 200г, курица 150г. ужин: ничего" → multi_meal (ужин без продуктов — пропусти)
-"вчера на завтрак ел яйца 3шт, на обед борщ 400г" → multi_meal, date=вчера для каждого
+"meal_session" data: {{"meal_type":"завтрак/обед/ужин/перекус","date":"{today}","items":[{{"name":"...","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+• date: сегодня={today}, вчера={yesterday}
+• Примеры: "на завтрак: лаваш 80г, помидор 300г, огурец 100г" → meal_session завтрак
 
-"meal_session" — пользователь описывает ОДИН приём пищи с несколькими продуктами (готовит, перечисляет ингредиенты)
-data: {{"meal_type":"завтрак/обед/ужин/перекус", "date":"{now.strftime('%Y-%m-%d')}", "items":[{{"name":"продукт","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
-date: дата приёма пищи. Сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}, позавчера={(now-timedelta(days=2)).strftime('%Y-%m-%d')}
-cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г/100мл, иначе null
-brand — заполни если упомянут бренд/марка, иначе null
-unit: "мл" для НАПИТКОВ, "г" для всего остального
-Примеры:
-"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session, date=сегодня
-"сегодня забыл записать завтрак: лаваш Кулиничі 300г, помидор 200г, курица 400г" → meal_session, meal_type:"завтрак", date=сегодня
-"вчера на обед ел гречку 200г и курицу 150г и огурец 100г" → meal_session, meal_type:"обед", date=вчера
+"multi_meal" data: {{"meals":[{{"meal_type":"завтрак/обед/ужин/перекус","date":"{today}","items":[...]}}]}}
+• Только приёмы с продуктами (пропусти "ужин — ничего не ел")
+• Примеры: "на завтрак лаваш 80г, на обед рис 200г и курица 300г" → multi_meal
 
-"food_log" — ОДИН или ДВА продукта, человек говорит что съел/выпил
-data: {{"date":"{now.strftime('%Y-%m-%d')}", "meal_type":null, "items":[{{"name":"название","brand":null,"grams":число,"unit":"г или мл","cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
-date: когда съел. Сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}
-meal_type: "завтрак/обед/ужин/перекус" если указано, иначе null
-cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г
-brand — заполни если упомянут бренд/марка
-unit: "мл" для НАПИТКОВ, "г" для еды
-grams: если не указаны — оцени (яблоко ≈ 150г, сникерс ≈ 55г, стакан воды ≈ 250мл)
-ВАЖНО — Red Bull всегда 250мл за банку:
-"выпил Red Bull" / "выпил Red Bull Zero" → grams=250, unit="мл", name="Red Bull Zero"
-"выпил Red Bull арбуз" / "выпил Red Bull Watermelon" → grams=250, unit="мл", name="Red Bull Watermelon"
-"выпил Red Bull тропик" / "выпил Red Bull Tropical" → grams=250, unit="мл", name="Red Bull Tropical"
-"выпил 2 Red Bull Zero" → grams=500, unit="мл"
-Примеры:
-"съел сникерс" → items:[{{"name":"Сникерс","grams":55,"unit":"г",...}}], date=сегодня
-"вчера на завтрак съел яблоко" → date=вчера, meal_type:"завтрак", items:[{{"name":"яблоко","grams":150,...}}]
-"выпил Red Bull 250мл" → items:[{{"name":"Red Bull","grams":250,"unit":"мл",...}}]
-ВАЖНО: если человек называет продукт + КБЖУ на 100г + граммы — это food_log с заполненными pro100/fat100/carb100
+"food_log_known_macros" data: {{"name":"...","brand":null,"grams":число,"calories":число,"protein":число,"fat":число,"carbs":число}}
+• Когда КБЖУ дан для конкретного кол-ва (не на 100г)
+• "съел батончик 45г, 210 ккал, белков 3г, жиров 9г, углеводов 28г" → food_log_known_macros
 
-"food_clarify" — уточнение граммов к предыдущему запросу еды (просто число или "N грамм/г")
-data: {{"grams": число}}
-Примеры: "100 грамм", "150г", "съел 80г"
+"food_clarify" data: {{"grams":число}}
+• Просто число/граммы в ответ на вопрос бота: "150г", "200 грамм", "съел 80"
 
-"food_log_known_macros" — пользователь говорит что СЪЕЛ + граммы + называет КБЖУ ИМЕННО ДЛЯ ЭТОГО КОЛИЧЕСТВА (не на 100г)
-data: {{"name":"...", "brand":null, "grams": число, "calories": число (для указанных грамм), "protein": число, "fat": число, "carbs": число}}
-Примеры:
-"съел батончик Lion 42г, 210 ккал, белков 2.65, жиров 10, углеводов 27" → food_log_known_macros (КБЖУ дан для 42г)
-"съел творог 150г, там 180 ккал, белка 25г" → food_log_known_macros
+"add_product" data: {{"name":"...","brand":null,"calories":число,"protein":число,"fat":число,"carbs":число}}
+• "добавь в базу творог Простоквашино: 100г — 100 ккал, белок 18г, жир 5г, углеводы 3г"
 
-"add_product" — пользователь явно просит ДОБАВИТЬ продукт в базу или отвечает на вопрос бота «укажи КБЖУ на 100г»
-data: {{"name":"...", "brand":null, "calories":..., "protein":..., "fat":..., "carbs":...}}
-Пример: "добавь в базу: творог Простоквашино, на 100г — 100 ккал, белок 18г" → add_product
-Пример ответа на запрос бота: "калории 250, белки 8г, жиры 3г, углеводы 45г" → add_product (имя возьми из контекста)
+"body_measurement" data: {{"weight":null,"fat_percent":null,"muscle_percent":null,"waist":null}}
+• "вешу 78кг", "жира 18%", "талия 82см"
 
-"body_measurement" — замеры тела текстом
-data: {{"weight":null,"bmi":null,"fat_percent":null,"muscle_percent":null,...}}
+"workout" data: {{"duration_minutes":null,"location":"зал/улица/дома","exercises":[],"notes":"","calories_burned":null}}
 
-"workout" — тренировка, физическая активность
-data: {{"duration_minutes":число или null, "location":"зал/улица/дома", "exercises":["список"], "notes":"...", "calories_burned":null}}
+"expense" data: {{"amount":число,"currency":"UAH/RUB/USD/EUR","category":"еда/транспорт/...","description":"...","store_name":null}}
+• Валюта: грн/гривен/₴=UAH, руб/рублей/₽=RUB, $/долларов=USD, €/евро=EUR
 
-"expense" — трата денег
-data: {{"amount":число, "currency":"RUB/UAH/USD/EUR", "category":"еда/кофе/транспорт/...", "description":"...", "store_name":null или "название магазина"}}
-Определяй валюту: гривен/грн/₴=UAH, рублей/руб/₽=RUB, долларов/$=USD, евро/€=EUR
+"income" data: {{"amount":число,"currency":"UAH","category":"зарплата/фриланс/...","description":"..."}}
 
-"income" — получил деньги
-data: {{"amount":число, "currency":"RUB", "category":"зарплата/фриланс/...", "description":"..."}}
+"reminder" data: {{"text":"...","remind_at":"YYYY-MM-DDTHH:MM:SS"}}
+• Без времени → 12:00 текущего дня
+• "через час" → {(now + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')}
+• "в 21:00 будет футбол" → remind_at={now.strftime('%Y-%m-%d')}T20:50:00 (за 10 мин)
 
-"reminder" — напомни в определённое время
-data: {{"text":"что именно напомнить", "remind_at":"YYYY-MM-DDTHH:MM:SS"}}
-Правила времени:
-- Если время не указано → 12:00 текущего дня или указанной даты
-- "в среду" → ближайшая среда
-- "через неделю" → {(now + timedelta(days=7)).strftime('%Y-%m-%d')}T12:00:00
-- "конец недели" → {end_of_week}T12:00:00
-- "в 21:00 будет футбол" без времени напоминания → {now.strftime('%Y-%m-%d')}T20:50:00 (за 10 минут)
-- "напомни в 20:50 что в 21:00 футбол" → {now.strftime('%Y-%m-%d')}T20:50:00
+"daily_goals" data: {{"has_workout":true/false}}
 
-"daily_goals" — посчитать цели питания на день
-data: {{"has_workout": true/false}}
+"habit_log" data: {{"habit_name":"...","done":true,"note":null}}
 
-"habit_log" — отметить привычку
-data: {{"habit_name":"...", "done":true/false, "note":null}}
+"task" data: {{"title":"...","due_date":null,"priority":"normal/high/low"}}
 
-"task" — добавить задачу
-data: {{"title":"...", "due_date":null, "priority":"normal/high/low"}}
+"query_today" data: {{}}
+• "итог дня", "как я сегодня", "что сегодня делал", "дай сводку за сегодня"
 
-"goal" — записать долгосрочную цель
-data: {{"title":"...", "category":"здоровье/финансы/...", "target_date":null}}
+"query_food" data: {{"date":null,"from_date":null,"to_date":null,"meal_type":null}}
+• "что я сегодня ел" → date={today}
+• "что ел вчера на ужин" → date={yesterday}, meal_type="ужин"
+• "что ел на этой неделе" → from_date={(now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')}, to_date={today}
 
-"query_today" — общая сводка СЕГОДНЯШНЕГО дня ("что сегодня делал", "итог дня", "как я сегодня")
-data: {{}}
+"query_finances" data: {{"from_date":"...","to_date":"...","subtype":"all/income/expense"}}
+• "сколько потратил за неделю" → from_date={(now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')}, to_date={today}, subtype="expense"
+• "доходы за месяц" → from_date={now.strftime('%Y-%m-01')}, to_date={today}, subtype="income"
 
-"query_food" — вопрос о питании за конкретный день или период
-data: {{"date":null, "from_date":null, "to_date":null, "meal_type":null}}
-Примеры дат: сегодня={now.strftime('%Y-%m-%d')}, вчера={yesterday}, позавчера={(now-timedelta(days=2)).strftime('%Y-%m-%d')}
-"что я сегодня ел" → date={now.strftime('%Y-%m-%d')}, meal_type:null
-"что я вчера съел" → date={yesterday}, meal_type:null
-"что я ел на завтрак" → date={now.strftime('%Y-%m-%d')}, meal_type:"завтрак"
-"что я ел на ужин в пятницу" → date=ближайшая прошлая пятница, meal_type:"ужин"
-"что я ел на этой неделе" → from_date=начало недели, to_date={now.strftime('%Y-%m-%d')}
-"сколько калорий я набрал вчера" → date={yesterday}
+"query_weight" data: {{"from_date":null}}
 
-"query_workout" — вопрос о тренировках
-data: {{"date":"{now.strftime('%Y-%m-%d')}"}}
-
-"query_finances" — вопрос о деньгах/доходах/расходах за период
-data: {{"from_date":"YYYY-MM-DD", "to_date":"YYYY-MM-DD", "subtype":"all/income/expense"}}
-Примеры:
-"сколько я заработал вчера" → from_date=вчера, to_date=вчера, subtype:"income"
-"сколько я потратил за неделю" → from_date=начало недели, to_date=сегодня, subtype:"expense"
-"какие расходы вчера" → from_date=вчера, to_date=вчера, subtype:"expense"
-"мои доходы за месяц" → from_date=начало месяца, to_date=сегодня, subtype:"income"
-Начало этой недели: {(now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')}
-Начало этого месяца: {now.strftime('%Y-%m-01')}
-
-"query_weight" — вопрос о весе/замерах
-data: {{"from_date":null}}
-
-"general_chat" — всё остальное, вопросы, советы
-
-Верни JSON: {{"type":"...", "data":...}}"""
+"general_chat" data: {{}}
+• ТОЛЬКО если ничего выше не подходит (вопросы не про еду/здоровье/финансы)"""
 
     import asyncio
     r = await asyncio.wait_for(
