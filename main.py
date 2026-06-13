@@ -147,8 +147,8 @@ async def transcribe_voice(file_path: str) -> str:
         )
     return r.text
 
-async def gpt(system: str, user: str, model: str = "gpt-4o-mini") -> str:
-    """gpt-4o-mini основная модель для текста"""
+async def gpt(system: str, user: str, model: str = "gpt-4o") -> str:
+    """gpt-4o основная модель для текста"""
     r = await ai.chat.completions.create(
         model=model, timeout=30,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
