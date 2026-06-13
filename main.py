@@ -33,8 +33,18 @@ supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_
 
 TZ = pytz.timezone(TIMEZONE)
 
-CONFIRM_WORDS = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "давай", "сохрани", "конечно", "го", "ага"]
-DENY_WORDS    = ["нет", "неверно", "не то", "отмена", "cancel", "no", "стоп", "не надо", "отмени"]
+CONFIRM_WORDS  = ["да", "подтверждаю", "сохраняй", "ок", "окей", "yes", "верно", "точно", "давай", "сохрани", "конечно", "го", "ага"]
+DENY_WORDS     = ["нет", "неверно", "не то", "отмена", "cancel", "no", "стоп", "не надо", "отмени"]
+MORE_WORDS     = ["нет", "не всё", "ещё", "еще", "добавлю", "подожди", "буду добавлять"]
+DONE_WORDS     = ["да", "всё", "все", "это всё", "это все", "готово", "хватит", "достаточно", "записывай", "сохраняй"]
+
+MEAL_TYPE_MAP  = {
+    "завтрак": "завтрак", "breakfast": "завтрак",
+    "обед": "обед", "lunch": "обед",
+    "ужин": "ужин", "dinner": "ужин",
+    "перекус": "перекус", "snack": "перекус",
+    "полдник": "перекус",
+}
 
 CURRENCY_MAP = {
     "гривен": "UAH", "гривна": "UAH", "грн": "UAH", "грн.": "UAH", "₴": "UAH",
@@ -224,6 +234,31 @@ async def get_nutrition(product_name: str, grams: float) -> dict:
         "auto_estimated": True,
     }
 
+async def _resolve_item(item: dict) -> dict:
+    """
+    Разрешает один продукт: ищет в базе, потом в инете, потом GPT.
+    Если пользователь указал КБЖУ на 100г — использует их напрямую.
+    """
+    name  = item.get("name", "")
+    grams = float(item.get("grams", 100))
+
+    # Если пользователь передал КБЖУ на 100г — используем их
+    if item.get("cal100") is not None:
+        ratio = grams / 100
+        return {
+            "product_name": name, "grams": grams,
+            "calories": round(item["cal100"] * ratio, 1),
+            "protein":  round((item.get("pro100") or 0) * ratio, 1),
+            "fat":      round((item.get("fat100") or 0) * ratio, 1),
+            "carbs":    round((item.get("carb100") or 0) * ratio, 1),
+            "cal100": item["cal100"], "pro100": item.get("pro100"),
+            "fat100": item.get("fat100"), "carb100": item.get("carb100"),
+            "brand": item.get("brand"), "auto_estimated": False,
+        }
+
+    # Иначе ищем через get_nutrition (база → интернет → GPT)
+    return await get_nutrition(name, grams)
+
 # ── Классификатор ─────────────────────────────────────────────────────
 
 async def classify(text: str) -> dict:
@@ -246,14 +281,22 @@ async def classify(text: str) -> dict:
 
 ТИПЫ:
 
-"food_log" — человек говорит что ел/съел/будет есть/скушал/употребил, ИЛИ просит посчитать калории конкретного продукта с граммами
-data: [{{"name":"точное название продукта или бренда", "grams": число или 100 если не указано}}]
+"meal_session" — пользователь описывает приём пищи с НЕСКОЛЬКИМИ продуктами (готовит, перечисляет ингредиенты, делает шаурму/салат/ужин)
+data: {{"meal_type":"завтрак/обед/ужин/перекус", "items":[{{"name":"продукт","grams":число,"cal100":null,"pro100":null,"fat100":null,"carb100":null}}]}}
+cal100/pro100/fat100/carb100 — заполни если пользователь назвал КБЖУ на 100г, иначе null
 Примеры:
-"съел сникерс" → [{{"name":"Snickers батончик", "grams":50}}]
-"съел 200г гречки и курицу 150г" → [{{"name":"гречка", "grams":200}},{{"name":"куриная грудка", "grams":150}}]
-"буду кушать милкивей" → [{{"name":"Milky Way батончик", "grams":50}}]
-"я съел курицу 600 грамм, посчитай калории" → [{{"name":"куриная грудка", "grams":600}}]
-"сколько калорий в 200г гречки" → [{{"name":"гречка", "grams":200}}]
+"делаю шаурму: лаваш 80г, помидор 100г, курица 300г" → meal_session
+"готовлю ужин: лаваш Кулиничі 80г (на 100г: жиры 10, белки 15, угл 80), помидор 100г" → meal_session с cal100 для лаваша
+"на обед: гречка 200г и куриная грудка 150г и огурец 100г" → meal_session
+
+"food_log" — ОДИН или ДВА продукта, человек просто говорит что съел без контекста приготовления
+data: [{{"name":"название", "grams": число}}]
+Примеры:
+"съел сникерс" → food_log
+"съел 200г гречки и курицу 150г" → food_log (только 2 продукта)
+"буду кушать милкивей" → food_log
+"я съел курицу 600 грамм, посчитай калории" → food_log
+"сколько калорий в 200г гречки" → food_log
 ВАЖНО: если человек называет конкретный продукт + граммы + просит посчитать — это food_log, НЕ query
 
 "food_clarify" — уточнение граммов к предыдущему запросу еды (просто число или "N грамм/г")
@@ -367,6 +410,28 @@ def fmt_workout(d: dict) -> str:
     parts.append("\nПодтверждаешь?")
     return "\n".join(parts)
 
+def fmt_meal_session(data: dict) -> str:
+    items     = data.get("items", [])
+    meal_type = data.get("meal_type", "приём пищи")
+    now_t     = now_local().strftime("%H:%M")
+
+    total_cal = sum(it.get("calories") or 0 for it in items)
+    total_p   = sum(it.get("protein")  or 0 for it in items)
+    total_f   = sum(it.get("fat")      or 0 for it in items)
+    total_c   = sum(it.get("carbs")    or 0 for it in items)
+
+    lines = [f"🍽 *{meal_type.capitalize()} — {now_t}*\n"]
+    for it in items:
+        cal = round(it.get("calories") or 0)
+        src = " _(ИИ)_" if it.get("auto_estimated") else ""
+        lines.append(f"• {it['product_name']}: {it['grams']}г — {cal} ккал{src}")
+        lines.append(f"  Б {round(it.get('protein') or 0)}г | Ж {round(it.get('fat') or 0)}г | У {round(it.get('carbs') or 0)}г")
+    lines.append(f"\n📊 *Итого:*")
+    lines.append(f"{round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
+    lines.append("\nЭто всё на этот приём пищи или добавишь ещё что-то?")
+    lines.append("_(«да» — записываю / «нет» — жду ещё продукты)_")
+    return "\n".join(lines)
+
 def fmt_reminder(d: dict) -> str:
     dt = datetime.fromisoformat(d["remind_at"])
     if dt.tzinfo is None:
@@ -382,22 +447,46 @@ async def save_action(pending: dict) -> str:
     data = pending["data"]
     td   = today_str()
 
-    if t == "food_log":
-        for it in data.get("items", []):
-            row = {k: v for k, v in it.items()
-                   if k in ("product_name","grams","calories","protein","fat","carbs","product_id","meal_number","note")}
-            row["date"] = td
+    if t in ("food_log", "meal_session"):
+        items     = data.get("items", [])
+        meal_type = data.get("meal_type")
+        logged_at = now_local().isoformat()
+
+        for it in items:
+            row = {
+                "date": td, "logged_at": logged_at,
+                "product_name": it.get("product_name"),
+                "grams":    it.get("grams"),
+                "calories": it.get("calories"),
+                "protein":  it.get("protein"),
+                "fat":      it.get("fat"),
+                "carbs":    it.get("carbs"),
+                "meal_type": meal_type,
+            }
+            if it.get("product_id"):
+                row["product_id"] = it["product_id"]
             supabase.table("food_log").insert(row).execute()
-            if it.get("auto_estimated") and it.get("product_name") and it.get("cal100"):
+
+            # Сохраняем продукт в базу если его ещё нет
+            if it.get("product_name") and it.get("cal100"):
                 ex = supabase.table("products").select("id").ilike("name", f"%{it['product_name']}%").limit(1).execute()
                 if not ex.data:
                     supabase.table("products").insert({
                         "name": it["product_name"],
-                        "calories": it.get("cal100"), "protein": it.get("pro100"),
-                        "fat": it.get("fat100"),      "carbs": it.get("carb100"),
+                        "brand": it.get("brand"),
+                        "calories": it.get("cal100"),
+                        "protein":  it.get("pro100"),
+                        "fat":      it.get("fat100"),
+                        "carbs":    it.get("carb100"),
                     }).execute()
-        total = round(sum(it.get("calories") or 0 for it in data.get("items", [])))
-        return f"✅ Записано! +{total} ккал в дневнике."
+
+        total_cal = round(sum(it.get("calories") or 0 for it in items))
+        total_p   = round(sum(it.get("protein")  or 0 for it in items))
+        total_f   = round(sum(it.get("fat")      or 0 for it in items))
+        total_c   = round(sum(it.get("carbs")    or 0 for it in items))
+        meal_label = f" ({meal_type})" if meal_type else ""
+        return (f"✅ {meal_label} записан!\n"
+                f"{total_cal} ккал | Б {total_p}г | Ж {total_f}г | У {total_c}г")
 
     if t == "body_measurement":
         data["date"] = td
@@ -644,6 +733,39 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
         await update.message.reply_text(reply)
         return
 
+    # ── meal_session: активная сессия приёма пищи ──
+    # Если есть открытая сессия и пользователь говорит "да/всё" → сохраняем
+    if pending and pending["type"] == "meal_session":
+        t_low = text.lower().strip()
+
+        if any(w in t_low for w in DONE_WORDS):
+            clear_pending(pending["id"])
+            msg = await save_action(pending)
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            return
+
+        if any(w in t_low for w in MORE_WORDS):
+            await update.message.reply_text("Хорошо, жду следующие продукты 👂")
+            return
+
+        # Пользователь добавляет ещё продукты в текущую сессию
+        if msg_type in ("food_log", "meal_session"):
+            new_raw = data if isinstance(data, list) else data.get("items", [])
+            if new_raw:
+                await update.message.reply_text("⏳ Ищу КБЖУ для новых продуктов...")
+                existing_items = pending["data"].get("items", [])
+                for item in new_raw:
+                    try:
+                        result = await _resolve_item(item)
+                        existing_items.append(result)
+                    except Exception as e:
+                        logger.error(f"resolve item error: {e}")
+
+                pending["data"]["items"] = existing_items
+                save_pending("meal_session", pending["data"], update.message.message_id)
+                await update.message.reply_text(fmt_meal_session(pending["data"]), parse_mode="Markdown")
+                return
+
     # ── food_clarify: уточнение граммов к предыдущему запросу ──
     if msg_type == "food_clarify" and pending and pending["type"] == "food_log":
         new_grams = float(data.get("grams", 100))
@@ -714,6 +836,27 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             f"_(сохраню в базу на 100г: {cal100} ккал | Б {pro100}г | Ж {fat100}г | У {carb100}г)_\n\n"
             f"Подтверждаешь?", parse_mode="Markdown"
         )
+
+    # ── meal_session: новый приём пищи с несколькими продуктами ──
+    elif msg_type == "meal_session":
+        raw_items = data.get("items", [])
+        meal_type = data.get("meal_type", "приём пищи")
+        if not raw_items:
+            await update.message.reply_text("Не понял состав. Назови продукты и граммы.")
+            return
+        await update.message.reply_text(f"⏳ Ищу КБЖУ для всех продуктов...")
+        resolved = []
+        for item in raw_items:
+            try:
+                resolved.append(await _resolve_item(item))
+            except Exception as e:
+                logger.error(f"resolve {item}: {e}")
+        if not resolved:
+            await update.message.reply_text("Не смог найти КБЖУ. Попробуй ещё раз.")
+            return
+        session_data = {"meal_type": meal_type, "items": resolved}
+        save_pending("meal_session", session_data, update.message.message_id)
+        await update.message.reply_text(fmt_meal_session(session_data), parse_mode="Markdown")
 
     elif msg_type == "add_product":
         save_pending("add_product", data, update.message.message_id)
