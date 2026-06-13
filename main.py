@@ -135,40 +135,74 @@ async def get_nutrition(product_name: str, grams: float) -> dict:
             "product_id": p["id"], "auto_estimated": False,
         }
 
-    # 2. Tavily — сначала ищем на таблице калорийности (украинский/русский сайт)
+    # 2. Поиск КБЖУ через Tavily + прямой скрапинг страницы
     macros = None
-    NUTRITION_SITES = [
-        "tablycjakalorijnosti.com.ua",
-        "calorizator.ru",
-        "fatsecret.ru",
-    ]
-    try:
-        # Приоритет: украинская таблица калорийности
-        result = tavily.search(
-            query=f"{product_name} калорийність КБЖУ білки жири вуглеводи на 100 грам",
-            search_depth="basic", max_results=5,
-            include_domains=NUTRITION_SITES
-        )
-        content = " ".join([r.get("content", "") for r in result.get("results", [])])[:3000]
 
-        # Если на спец-сайтах не нашли — обычный поиск
-        if not content or len(content) < 50:
-            result = tavily.search(
-                query=f"{product_name} калорийность белки жиры углеводы на 100 грамм КБЖУ",
-                search_depth="basic", max_results=3
-            )
-            content = " ".join([r.get("content", "") for r in result.get("results", [])])[:3000]
+    async def fetch_page_text(url: str) -> str:
+        import aiohttp, ssl, re
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=8),
+                                 headers={"User-Agent": "Mozilla/5.0"}, ssl=ctx) as resp:
+                    html = await resp.text(errors="ignore")
+                    text = re.sub(r'<[^>]+>', ' ', html)
+                    return re.sub(r'\s+', ' ', text)[:4000]
+        except Exception as e:
+            logger.warning(f"fetch {url}: {e}")
+            return ""
 
-        if content and len(content) > 50:
+    async def macros_from_text(text: str) -> dict | None:
+        if len(text) < 30:
+            return None
+        try:
             raw = await gpt(
-                "Ты эксперт по питанию. Из текста извлеки КБЖУ на 100г. Верни ТОЛЬКО JSON без лишнего текста: {\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}. Если данных нет — верни {\"calories\": null}.",
-                f"Продукт: {product_name}\n\nТекст: {content}"
+                "Из текста извлеки КБЖУ продукта на 100г. Верни ТОЛЬКО JSON: "
+                "{\"calories\": число, \"protein\": число, \"fat\": число, \"carbs\": число}. "
+                "Если данных нет — верни {\"calories\": null}.",
+                f"Продукт: {product_name}\n\nТекст:\n{text}"
             )
-            parsed = parse_json(raw)
-            if parsed.get("calories"):
-                macros = parsed
+            d = parse_json(raw)
+            return d if d.get("calories") else None
+        except:
+            return None
+
+    PRIORITY_SITES = ["tablycjakalorijnosti.com.ua", "calorizator.ru", "fatsecret.ru"]
+
+    try:
+        # Пробуем три запроса: украинский, русский, английский
+        queries = [
+            f"{product_name} калорійність білки жири вуглеводи на 100 грам",
+            f"{product_name} калорийность белки жиры углеводы на 100г КБЖУ",
+            f"{product_name} calories protein fat carbs per 100g nutrition",
+        ]
+        for query in queries:
+            result = tavily.search(query=query, search_depth="advanced", max_results=5)
+            results_list = result.get("results", [])
+
+            # Сначала пробуем скачать страницу с приоритетных сайтов напрямую
+            for r in results_list:
+                url = r.get("url", "")
+                if any(site in url for site in PRIORITY_SITES):
+                    page_text = await fetch_page_text(url)
+                    macros = await macros_from_text(page_text)
+                    if macros:
+                        logger.info(f"Nutrition from {url}")
+                        break
+
+            if macros:
+                break
+
+            # Если приоритетных не нашли — берём весь контент из Tavily
+            content = " ".join([r.get("content", "") for r in results_list])[:3000]
+            macros = await macros_from_text(content)
+            if macros:
+                break
+
     except Exception as e:
-        logger.warning(f"Tavily error for {product_name}: {e}")
+        logger.warning(f"Tavily search error for {product_name}: {e}")
 
     # 3. GPT по памяти
     if not macros:
