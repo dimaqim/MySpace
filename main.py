@@ -778,15 +778,20 @@ def fmt_food(items: list, log_date: str = None, meal_type: str = None) -> str:
 
 def fmt_measurement(d: dict) -> str:
     lines = ["⚖️ *Записать замер тела?*\n"]
-    if d.get("weight"):         lines.append(f"Вес: {d['weight']} кг")
-    if d.get("bmi"):            lines.append(f"ИМТ: {d['bmi']}")
-    if d.get("fat_percent"):    lines.append(f"Жир: {d['fat_percent']}%")
-    if d.get("muscle_percent"): lines.append(f"Мышцы: {d['muscle_percent']}%")
-    if d.get("water_percent"):  lines.append(f"Вода: {d['water_percent']}%")
-    if d.get("visceral_fat"):   lines.append(f"Висцеральный жир: {d['visceral_fat']}")
-    if d.get("bmr"):            lines.append(f"Обмен: {d['bmr']} ккал")
-    if d.get("fat_mass"):       lines.append(f"Жировая масса: {d['fat_mass']} кг")
-    if d.get("lean_mass"):      lines.append(f"Сухая масса: {d['lean_mass']} кг")
+    if d.get("weight"):          lines.append(f"Вес: {d['weight']} кг")
+    if d.get("bmi"):             lines.append(f"ИМТ: {d['bmi']}")
+    if d.get("fat_percent"):     lines.append(f"Жир: {d['fat_percent']}%")
+    if d.get("muscle_percent"):  lines.append(f"Мышцы: {d['muscle_percent']}%")
+    if d.get("water_percent"):   lines.append(f"Вода: {d['water_percent']}%")
+    if d.get("bone_mass"):       lines.append(f"Костная масса: {d['bone_mass']} кг")
+    if d.get("bmr"):             lines.append(f"Обмен веществ: {d['bmr']} ккал")
+    if d.get("protein_percent"): lines.append(f"Белок: {d['protein_percent']}%")
+    if d.get("body_age"):        lines.append(f"Возраст тела: {d['body_age']}")
+    if d.get("visceral_fat"):    lines.append(f"Висцеральный жир: {d['visceral_fat']}")
+    if d.get("fat_mass"):        lines.append(f"Жировая ткань: {d['fat_mass']} кг")
+    if d.get("lean_mass"):       lines.append(f"Вес без жира: {d['lean_mass']} кг")
+    if d.get("muscle_mass"):     lines.append(f"Мышечная масса: {d['muscle_mass']} кг")
+    if d.get("protein_kg"):      lines.append(f"Протеин: {d['protein_kg']} кг")
     lines.append("\nПодтверждаешь?")
     return "\n".join(lines)
 
@@ -2008,9 +2013,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Пробуем как весы
     try:
         raw = await gpt_vision(image_bytes,
-            "На изображении скриншот умных весов. Извлеки все показатели. "
-            "Верни ТОЛЬКО JSON: {\"weight\":null,\"bmi\":null,\"fat_percent\":null,\"muscle_percent\":null,"
-            "\"water_percent\":null,\"visceral_fat\":null,\"bmr\":null,\"fat_mass\":null,\"lean_mass\":null,\"bone_mass\":null}"
+            "На изображении скриншот умных весов (приложение для взвешивания). Извлеки ВСЕ показатели какие видишь. "
+            "Соответствие полей:\n"
+            "• weight — Вес (кг)\n"
+            "• bmi — ИМТ\n"
+            "• fat_percent — Коэффициент жира в теле (%)\n"
+            "• muscle_percent — Мышцы (%)\n"
+            "• water_percent — Уровень воды в организме (%)\n"
+            "• bone_mass — Костная масса (кг)\n"
+            "• bmr — Скорость обмена веществ (kcal)\n"
+            "• protein_percent — Уровень белка (%)\n"
+            "• body_age — Возраст тела (число лет)\n"
+            "• visceral_fat — Висцеральный жир (число)\n"
+            "• fat_mass — Жировая ткань (кг)\n"
+            "• lean_mass — Вес без жира (кг)\n"
+            "• muscle_mass — Вес мышечной массы (кг)\n"
+            "• protein_kg — Уровень протеина (кг)\n"
+            "Если показателя нет на скрине — ставь null. Верни ТОЛЬКО JSON: "
+            "{\"weight\":null,\"bmi\":null,\"fat_percent\":null,\"muscle_percent\":null,"
+            "\"water_percent\":null,\"bone_mass\":null,\"bmr\":null,\"protein_percent\":null,"
+            "\"body_age\":null,\"visceral_fat\":null,\"fat_mass\":null,\"lean_mass\":null,"
+            "\"muscle_mass\":null,\"protein_kg\":null}"
         )
         d = parse_json(raw)
         if d.get("weight"):

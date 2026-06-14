@@ -44,13 +44,13 @@ export function sbBodyToBodyLog(r: any) {
     waterPct: r.water_percent ?? 0,
     boneMass: r.bone_mass ?? 0,
     metabolism: r.bmr ?? 0,
-    proteinPct: 0,
-    bodyAge: 0,
+    proteinPct: r.protein_percent ?? 0,
+    bodyAge: r.body_age ?? 0,
     visceralFat: r.visceral_fat ?? 0,
     fatKg: r.fat_mass ?? 0,
     leanMass: r.lean_mass ?? 0,
-    muscleKg: 0,
-    proteinKg: 0,
+    muscleKg: r.muscle_mass ?? 0,
+    proteinKg: r.protein_kg ?? 0,
   }
 }
 
