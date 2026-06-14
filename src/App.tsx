@@ -3,6 +3,11 @@ import {
   addFoodToSupabase,
   addMealToSupabase,
   addBodyLogToSupabase,
+  deleteMealFromSupabase,
+  deleteProductFromSupabase,
+  updateProductInSupabase,
+  updateMealInSupabase,
+  updateDailyGoalsInSupabase,
   sbProductToFood,
   sbFoodLogToMeal,
   sbBodyToBodyLog,
@@ -327,6 +332,15 @@ const nav = [
   ["settings", Settings, "Настройки"],
 ] as const;
 
+// Расчёт целей БЖУ от калорий: Б 30% / Ж 25% / У 45%
+function deriveMacroGoals(calories: number) {
+  return {
+    protein: Math.round((calories * 0.30) / 4),
+    fat: Math.round((calories * 0.25) / 9),
+    carbs: Math.round((calories * 0.45) / 4),
+  };
+}
+
 function App() {
   const [page, setPage] = useState<Page>("today");
   const [period, setPeriod] = useState<Period>("Today");
@@ -352,19 +366,26 @@ function App() {
   // ── Supabase sync ──────────────────────────────────────────────
   useEffect(() => {
     fetchAll().then(({ products, foodLog, bodyMeasurements, dailyGoals }) => {
-      setData((prev) => ({
-        ...prev,
-        foods: products.length > 0 ? products.map(sbProductToFood) : prev.foods,
-        meals: foodLog.length > 0 ? foodLog.map(sbFoodLogToMeal) : prev.meals,
-        bodyLogs: bodyMeasurements.length > 0 ? bodyMeasurements.map(sbBodyToBodyLog) : prev.bodyLogs,
-        settings: dailyGoals ? {
-          ...prev.settings,
-          caloriesGoal: dailyGoals.calories ?? prev.settings.caloriesGoal,
-          proteinGoal: dailyGoals.protein ?? prev.settings.proteinGoal,
-          fatGoal: dailyGoals.fat ?? prev.settings.fatGoal,
-          carbsGoal: dailyGoals.carbs ?? prev.settings.carbsGoal,
-        } : prev.settings,
-      }));
+      setData((prev) => {
+        // Цель калорий: ручная (daily_goals) > обмен веществ с последнего взвешивания (bmr) > прежняя
+        const latestBmr = bodyMeasurements.find((b: any) => b.bmr)?.bmr;
+        const calGoal = dailyGoals?.calories ?? latestBmr ?? prev.settings.caloriesGoal;
+        // БЖУ: ручные > расчёт от калорий (Б 30% / Ж 25% / У 45%)
+        const derived = deriveMacroGoals(Number(calGoal) || 0);
+        return {
+          ...prev,
+          foods: products.length > 0 ? products.map(sbProductToFood) : prev.foods,
+          meals: foodLog.length > 0 ? foodLog.map(sbFoodLogToMeal) : prev.meals,
+          bodyLogs: bodyMeasurements.length > 0 ? bodyMeasurements.map(sbBodyToBodyLog) : prev.bodyLogs,
+          settings: {
+            ...prev.settings,
+            caloriesGoal: calGoal,
+            proteinGoal: dailyGoals?.protein ?? derived.protein,
+            fatGoal: dailyGoals?.fat ?? derived.fat,
+            carbsGoal: dailyGoals?.carbs ?? derived.carbs,
+          },
+        };
+      });
     });
   }, []);
 
@@ -384,7 +405,12 @@ function App() {
     } else if (table === 'body_measurements' || table === 'body_measurements_update') {
       setData((prev) => {
         const filtered = prev.bodyLogs.filter((b) => b.id !== row.id);
-        return { ...prev, bodyLogs: [sbBodyToBodyLog(row), ...filtered] };
+        // Новый скриншот взвешивания → обновляем цель калорий из обмена веществ (bmr)
+        const dm = deriveMacroGoals(Number(row.bmr) || 0);
+        const nextSettings = row.bmr
+          ? { ...prev.settings, caloriesGoal: row.bmr, proteinGoal: dm.protein, fatGoal: dm.fat, carbsGoal: dm.carbs }
+          : prev.settings;
+        return { ...prev, bodyLogs: [sbBodyToBodyLog(row), ...filtered], settings: nextSettings };
       });
     } else if (table === 'daily_goals') {
       setData((prev) => ({
@@ -1293,12 +1319,22 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
   const [addMeal, setAddMeal] = useState(false);
   const [editGoals, setEditGoals] = useState(false);
   const [editingFood, setEditingFood] = useState<FoodItem | null>(null);
+  const [editingMeal, setEditingMeal] = useState<any | null>(null);
 
   const handleDeleteFood = (foodId: string) => {
     setData((p) => ({
       ...p,
       foods: p.foods.filter((f) => f.id !== foodId),
     }));
+    deleteProductFromSupabase(foodId);
+  };
+
+  const handleDeleteMeal = (mealId: string) => {
+    setData((p) => ({
+      ...p,
+      meals: p.meals.filter((mm) => mm.id !== mealId),
+    }));
+    deleteMealFromSupabase(mealId);
   };
 
   const pGoal = Number(data.settings.proteinGoal) || 150;
@@ -1461,18 +1497,36 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
         <SectionTitle title="Дневник питания" />
         <div className="overflow-x-auto">
           <table className="table">
-            <thead><tr><th>Дата</th><th>Продукт</th><th>Приём</th><th>Вес (г)</th><th>Ккал</th><th>Б</th><th>Ж</th><th>У</th></tr></thead>
+            <thead><tr><th>Дата</th><th>Продукт</th><th>Приём</th><th>Вес</th><th>Ккал</th><th>Б</th><th>Ж</th><th>У</th><th></th></tr></thead>
             <tbody>
               {[...data.meals].sort((a, b) => b.date.localeCompare(a.date)).map((m) => (
                 <tr key={m.id}>
                   <td>{m.date}</td>
                   <td className="font-medium">{m.name}</td>
                   <td><span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-semibold text-accent">{m.mealType}</span></td>
-                  <td>{m.weight} г</td>
+                  <td>{m.weight} {(m as any).unit ?? "г"}</td>
                   <td className="font-semibold">{m.calories}</td>
                   <td>{m.protein}</td>
                   <td>{m.fat}</td>
                   <td>{m.carbs}</td>
+                  <td>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => setEditingMeal(m)}
+                        className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                        title="Редактировать"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => handleDeleteMeal(m.id)}
+                        className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
+                        title="Удалить запись"
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1498,6 +1552,11 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
       {editingFood && (
         <Modal title="Редактировать продукт" close={() => setEditingFood(null)}>
           <FoodEditForm food={editingFood} setData={setData} after={() => setEditingFood(null)} />
+        </Modal>
+      )}
+      {editingMeal && (
+        <Modal title="Редактировать запись" close={() => setEditingMeal(null)}>
+          <MealEditForm meal={editingMeal} setData={setData} after={() => setEditingMeal(null)} />
         </Modal>
       )}
     </PageGrid>
@@ -3175,16 +3234,17 @@ function TransactionForm({ add, fixedType, after }: { add: any; fixedType?: TxTy
 }
 
 function FoodForm({ setData, after }: { setData: React.Dispatch<React.SetStateAction<AppData>>; after?: () => void }) {
-  const [f, bind] = useFormState({ name: "", cal100: "" as any, pro100: "" as any, fat100: "" as any, carb100: "" as any });
+  const [f, bind] = useFormState({ name: "", brand: "", cal100: "" as any, pro100: "" as any, fat100: "" as any, carb100: "" as any });
   return (
     <Form onSubmit={() => {
-      const newFood = { id: id(), name: f.name, cal100: Number(f.cal100) || 0, pro100: Number(f.pro100) || 0, fat100: Number(f.fat100) || 0, carb100: Number(f.carb100) || 0 };
+      const newFood = { id: id(), name: f.name, brand: f.brand || undefined, cal100: Number(f.cal100) || 0, pro100: Number(f.pro100) || 0, fat100: Number(f.fat100) || 0, carb100: Number(f.carb100) || 0 };
       addFoodToSupabase(newFood).then((sbRow) => {
-        setData((p) => ({ ...p, foods: [sbRow ? sbProductToFood(sbRow) : newFood, ...p.foods] }));
+        setData((p) => ({ ...p, foods: [sbRow ? sbProductToFood(sbRow) : { id: newFood.id, name: newFood.name + (f.brand ? ` (${f.brand})` : ""), cal100: newFood.cal100, pro100: newFood.pro100, fat100: newFood.fat100, carb100: newFood.carb100 }, ...p.foods] }));
       });
       after?.();
     }}>
       <Input label="Название продукта" {...bind("name")} />
+      <Input label="Торговая марка (необязательно)" {...bind("brand")} />
       <Input label="Калории на 100 г" type="number" placeholder="Введите калории..." {...bind("cal100")} />
       <Input label="Белки на 100 г" type="number" placeholder="Введите белки..." {...bind("pro100")} />
       <Input label="Жиры на 100 г" type="number" placeholder="Введите жиры..." {...bind("fat100")} />
@@ -3193,6 +3253,8 @@ function FoodForm({ setData, after }: { setData: React.Dispatch<React.SetStateAc
   );
 }
 
+type DraftItem = { id: string; name: string; foodId?: string; weight: number; calories: number; protein: number; fat: number; carbs: number };
+
 function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; after?: () => void }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<FoodItem | null>(null);
@@ -3200,6 +3262,7 @@ function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; aft
   const [mealType, setMealType] = useState("Завтрак");
   const [date, setDate] = useState(iso(0));
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [items, setItems] = useState<DraftItem[]>([]);
 
   const suggestions = query.length > 0
     ? foods.filter((f) => f.name.toLowerCase().includes(query.toLowerCase())).slice(0, 6)
@@ -3219,34 +3282,76 @@ function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; aft
     setShowSuggestions(false);
   };
 
+  // Текущий продукт как черновик (если выбран и введён вес)
+  const currentDraft = (): DraftItem | null => {
+    const name = selected ? selected.name : query.trim();
+    if (!name) return null;
+    const macros = calc ?? { calories: 0, protein: 0, fat: 0, carbs: 0 };
+    return { id: id(), name, foodId: selected?.id, weight: Number(weight) || 100, ...macros };
+  };
+
+  const addAnother = () => {
+    const d = currentDraft();
+    if (!d) return;
+    setItems((prev) => [...prev, d]);
+    setQuery(""); setSelected(null); setWeight(100); setShowSuggestions(false);
+  };
+
+  const removeItem = (rid: string) => setItems((prev) => prev.filter((i) => i.id !== rid));
+
+  // Все продукты приёма = добавленные + текущий незавершённый (если есть)
+  const allItems = (): DraftItem[] => {
+    const d = currentDraft();
+    return d ? [...items, d] : items;
+  };
+
+  const total = allItems().reduce((a, i) => ({
+    calories: a.calories + i.calories,
+    protein: Math.round((a.protein + i.protein) * 10) / 10,
+    fat: Math.round((a.fat + i.fat) * 10) / 10,
+    carbs: Math.round((a.carbs + i.carbs) * 10) / 10,
+  }), { calories: 0, protein: 0, fat: 0, carbs: 0 });
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selected && !query) return;
-    const name = selected ? selected.name : query;
-    const macros = calc ?? { calories: 0, protein: 0, fat: 0, carbs: 0 };
-    const newMeal = { id: id(), date, name, mealType, weight: Number(weight) || 100, foodId: selected?.id, ...macros };
-    addMealToSupabase({ ...newMeal }).then((sbRow) => {
-      if (sbRow) {
-        add("meals", sbFoodLogToMeal(sbRow));
-      } else {
-        add("meals", newMeal);
-      }
-    });
+    const list = allItems();
+    if (list.length === 0) return;
+    for (const it of list) {
+      const meal = { date, name: it.name, mealType, weight: it.weight, calories: it.calories, protein: it.protein, fat: it.fat, carbs: it.carbs };
+      addMealToSupabase(meal).then((sbRow) => {
+        if (sbRow) add("meals", sbFoodLogToMeal(sbRow));
+        else add("meals", { id: it.id, ...meal });
+      });
+    }
     after?.();
   };
 
   return (
     <form className="form-grid" onSubmit={handleSubmit}>
+      {/* Уже добавленные продукты */}
+      {items.length > 0 && (
+        <div className="md:col-span-2 space-y-2">
+          {items.map((it) => (
+            <div key={it.id} className="flex items-center justify-between rounded-xl bg-orange-50 dark:bg-slate-800 px-3 py-2 text-sm">
+              <span><strong>{it.name}</strong> · {it.weight} г</span>
+              <span className="flex items-center gap-3">
+                <span className="text-accent font-semibold">{it.calories} ккал</span>
+                <button type="button" onClick={() => removeItem(it.id)} className="text-rose-400 hover:text-rose-600" title="Убрать">✕</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Autocomplete */}
       <label className="field md:col-span-2" style={{ position: "relative" }}>
-        <span>Продукт</span>
+        <span>Продукт{items.length > 0 ? " (ещё)" : ""}</span>
         <input
           value={query}
           onChange={(e) => { setQuery(e.target.value); setSelected(null); setShowSuggestions(true); }}
           onFocus={() => setShowSuggestions(true)}
           onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-          placeholder="Начни вводить название..."
-          required
+          placeholder="Начни вводить название или марку..."
         />
         {showSuggestions && suggestions.length > 0 && (
           <div style={{
@@ -3269,7 +3374,7 @@ function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; aft
 
       <label className="field">
         <span>Вес порции (г)</span>
-        <input type="number" value={weight} onChange={(e) => setWeight(e.target.value === "" ? "" : Number(e.target.value))} min={1} required placeholder="Введите вес..." />
+        <input type="number" value={weight} onChange={(e) => setWeight(e.target.value === "" ? "" : Number(e.target.value))} min={1} placeholder="Введите вес..." />
       </label>
 
       <label className="field">
@@ -3279,15 +3384,21 @@ function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; aft
         </select>
       </label>
 
-      <label className="field">
+      <label className="field md:col-span-2">
         <span>Дата</span>
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
       </label>
 
-      {/* Auto-calculated macros */}
-      {calc && (
-        <div className="md:col-span-2 grid grid-cols-4 gap-3 rounded-2xl bg-orange-50 p-4">
-          {[["Ккал", calc.calories], ["Белки", `${calc.protein}г`], ["Жиры", `${calc.fat}г`], ["Углеводы", `${calc.carbs}г`]].map(([l, v]) => (
+      {/* Кнопка «Добавить ещё продукт» */}
+      <button type="button" onClick={addAnother} disabled={!currentDraft()}
+        className="md:col-span-2 flex items-center justify-center gap-2 rounded-xl border border-dashed border-accent/50 py-2.5 text-sm font-semibold text-accent disabled:opacity-40 hover:bg-orange-50 dark:hover:bg-slate-800 transition">
+        <Plus size={16} />Добавить ещё продукт
+      </button>
+
+      {/* Общий итог по приёму */}
+      {allItems().length > 0 && (
+        <div className="md:col-span-2 grid grid-cols-4 gap-3 rounded-2xl bg-orange-50 dark:bg-slate-800 p-4">
+          {[["Ккал", total.calories], ["Белки", `${total.protein}г`], ["Жиры", `${total.fat}г`], ["Углеводы", `${total.carbs}г`]].map(([l, v]) => (
             <div key={l as string} className="text-center">
               <div className="text-xs font-semibold uppercase text-slate-400">{l as string}</div>
               <div className="mt-1 text-lg font-bold text-accent">{v as string | number}</div>
@@ -3296,7 +3407,9 @@ function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; aft
         </div>
       )}
 
-      <button className="primary-btn justify-center md:col-span-2" type="submit"><Plus size={17} />Сохранить</button>
+      <button className="primary-btn justify-center md:col-span-2" type="submit" disabled={allItems().length === 0}>
+        <Plus size={17} />Сохранить приём ({allItems().length})
+      </button>
     </form>
   );
 }
@@ -3534,16 +3647,23 @@ function NutritionGoalsForm({ settings, setData, after }: { settings: SettingsDa
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const g = {
+      calories: Number(calories) || 0,
+      protein: Number(protein) || 0,
+      fat: Number(fat) || 0,
+      carbs: Number(carbs) || 0,
+    };
     setData((p) => ({
       ...p,
       settings: {
         ...p.settings,
-        caloriesGoal: Number(calories) || 0,
-        proteinGoal: Number(protein) || 0,
-        fatGoal: Number(fat) || 0,
-        carbsGoal: Number(carbs) || 0,
+        caloriesGoal: g.calories,
+        proteinGoal: g.protein,
+        fatGoal: g.fat,
+        carbsGoal: g.carbs,
       },
     }));
+    updateDailyGoalsInSupabase(g);
     after();
   };
 
@@ -3581,10 +3701,12 @@ function FoodEditForm({ food, setData, after }: { food: FoodItem; setData: React
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const patch = { name, cal100: Number(cal100) || 0, pro100: Number(pro100) || 0, fat100: Number(fat100) || 0, carb100: Number(carb100) || 0 };
     setData((p) => ({
       ...p,
-      foods: p.foods.map((f) => f.id === food.id ? { ...f, name, cal100: Number(cal100) || 0, pro100: Number(pro100) || 0, fat100: Number(fat100) || 0, carb100: Number(carb100) || 0 } : f),
+      foods: p.foods.map((f) => f.id === food.id ? { ...f, ...patch } : f),
     }));
+    updateProductInSupabase(food.id, patch);
     after();
   };
 
@@ -3610,6 +3732,64 @@ function FoodEditForm({ food, setData, after }: { food: FoodItem; setData: React
         <span>Углеводы на 100г (г)</span>
         <input type="number" value={carb100} onChange={(e) => setCarb100(e.target.value === "" ? "" : Number(e.target.value))} min={0} step="0.1" required placeholder="Введите углеводы..." />
       </label>
+      <div className="md:col-span-2 flex justify-end gap-2 mt-2">
+        <button type="submit" className="primary-btn">Сохранить</button>
+      </div>
+    </form>
+  );
+}
+
+function MealEditForm({ meal, setData, after }: { meal: any; setData: React.Dispatch<React.SetStateAction<AppData>>; after: () => void }) {
+  const [weight, setWeight] = useState<number | "">(meal.weight ?? 0);
+  const [mealType, setMealType] = useState<string>(meal.mealType && meal.mealType !== "Без приёма" ? meal.mealType : "Завтрак");
+  const [date, setDate] = useState<string>(meal.date);
+
+  const oldW = Number(meal.weight) || 0;
+  const newW = Number(weight) || 0;
+  const ratio = oldW > 0 ? newW / oldW : 1;
+  const recalc = {
+    calories: Math.round((meal.calories ?? 0) * ratio),
+    protein: Math.round((meal.protein ?? 0) * ratio * 10) / 10,
+    fat: Math.round((meal.fat ?? 0) * ratio * 10) / 10,
+    carbs: Math.round((meal.carbs ?? 0) * ratio * 10) / 10,
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const patch = { weight: newW, mealType, date, ...recalc };
+    setData((p) => ({
+      ...p,
+      meals: p.meals.map((mm) => mm.id === meal.id ? { ...mm, ...patch } : mm),
+    }));
+    updateMealInSupabase(meal.id, patch);
+    after();
+  };
+
+  return (
+    <form className="form-grid" onSubmit={handleSubmit}>
+      <div className="md:col-span-2 text-sm font-semibold">{meal.name}</div>
+      <label className="field">
+        <span>Вес ({meal.unit ?? "г"})</span>
+        <input type="number" value={weight} onChange={(e) => setWeight(e.target.value === "" ? "" : Number(e.target.value))} min={1} required />
+      </label>
+      <label className="field">
+        <span>Приём пищи</span>
+        <select value={mealType} onChange={(e) => setMealType(e.target.value)}>
+          {["Завтрак","Обед","Ужин","Перекус"].map((o) => <option key={o}>{o}</option>)}
+        </select>
+      </label>
+      <label className="field md:col-span-2">
+        <span>Дата</span>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+      </label>
+      <div className="md:col-span-2 grid grid-cols-4 gap-3 rounded-2xl bg-orange-50 dark:bg-slate-800 p-3">
+        {[["Ккал", recalc.calories], ["Белки", `${recalc.protein}г`], ["Жиры", `${recalc.fat}г`], ["Углеводы", `${recalc.carbs}г`]].map(([l, v]) => (
+          <div key={l as string} className="text-center">
+            <div className="text-xs font-semibold uppercase text-slate-400">{l as string}</div>
+            <div className="mt-1 text-base font-bold text-accent">{v as string | number}</div>
+          </div>
+        ))}
+      </div>
       <div className="md:col-span-2 flex justify-end gap-2 mt-2">
         <button type="submit" className="primary-btn">Сохранить</button>
       </div>

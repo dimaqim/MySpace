@@ -21,12 +21,15 @@ export function sbFoodLogToMeal(r: any) {
     id: r.id,
     date: r.date,
     name: r.product_name,
-    mealType: r.meal_number ? `Приём ${r.meal_number}` : 'Приём',
+    mealType: r.meal_type
+      ? String(r.meal_type).charAt(0).toUpperCase() + String(r.meal_type).slice(1)
+      : 'Без приёма',
     calories: Math.round(r.calories ?? 0),
     protein: Math.round(r.protein ?? 0),
     fat: Math.round(r.fat ?? 0),
     carbs: Math.round(r.carbs ?? 0),
     weight: r.grams ?? 0,
+    unit: r.unit ?? 'г',
   }
 }
 
@@ -51,13 +54,39 @@ export function sbBodyToBodyLog(r: any) {
   }
 }
 
+// ── Delete / update helpers ───────────────────────────────────────
+
+export async function deleteMealFromSupabase(id: string) {
+  const { error } = await supabase.from('food_log').delete().eq('id', id)
+  if (error) console.error('deleteMeal error:', error)
+}
+
+export async function deleteProductFromSupabase(id: string) {
+  const { error } = await supabase.from('products').delete().eq('id', id)
+  if (error) console.error('deleteProduct error:', error)
+}
+
+export async function updateProductInSupabase(id: string, p: {
+  name?: string; cal100?: number; pro100?: number; fat100?: number; carb100?: number
+}) {
+  const patch: any = {}
+  if (p.name !== undefined) patch.name = p.name
+  if (p.cal100 !== undefined) patch.calories = p.cal100
+  if (p.pro100 !== undefined) patch.protein = p.pro100
+  if (p.fat100 !== undefined) patch.fat = p.fat100
+  if (p.carb100 !== undefined) patch.carbs = p.carb100
+  const { error } = await supabase.from('products').update(patch).eq('id', id)
+  if (error) console.error('updateProduct error:', error)
+}
+
 // ── Write helpers ─────────────────────────────────────────────────
 
 export async function addFoodToSupabase(food: {
-  name: string; cal100: number; pro100: number; fat100: number; carb100: number
+  name: string; brand?: string; cal100: number; pro100: number; fat100: number; carb100: number
 }) {
   const { data, error } = await supabase.from('products').insert({
     name: food.name,
+    brand: food.brand || null,
     calories: food.cal100,
     protein: food.pro100,
     fat: food.fat100,
@@ -67,20 +96,49 @@ export async function addFoodToSupabase(food: {
   return data
 }
 
+const mealTypeToBot = (mt?: string) => {
+  if (!mt) return null
+  const m = mt.toLowerCase()
+  if (m.includes('завтрак')) return 'завтрак'
+  if (m.includes('обед')) return 'обед'
+  if (m.includes('ужин')) return 'ужин'
+  if (m.includes('перекус')) return 'перекус'
+  return null
+}
+
 export async function addMealToSupabase(meal: {
-  name: string; calories: number; protein: number; fat: number; carbs: number; weight: number; mealType?: string
+  name: string; calories: number; protein: number; fat: number; carbs: number;
+  weight: number; mealType?: string; date?: string; unit?: string
 }) {
   const { data, error } = await supabase.from('food_log').insert({
-    date: today(),
+    date: meal.date || today(),
     product_name: meal.name,
     grams: meal.weight,
     calories: meal.calories,
     protein: meal.protein,
     fat: meal.fat,
     carbs: meal.carbs,
+    meal_type: mealTypeToBot(meal.mealType),
+    unit: meal.unit || 'г',
   }).select().single()
   if (error) console.error('addMeal error:', error)
   return data
+}
+
+export async function updateMealInSupabase(id: string, m: {
+  weight?: number; calories?: number; protein?: number; fat?: number; carbs?: number;
+  mealType?: string; date?: string
+}) {
+  const patch: any = {}
+  if (m.weight !== undefined) patch.grams = m.weight
+  if (m.calories !== undefined) patch.calories = m.calories
+  if (m.protein !== undefined) patch.protein = m.protein
+  if (m.fat !== undefined) patch.fat = m.fat
+  if (m.carbs !== undefined) patch.carbs = m.carbs
+  if (m.mealType !== undefined) patch.meal_type = mealTypeToBot(m.mealType)
+  if (m.date !== undefined) patch.date = m.date
+  const { error } = await supabase.from('food_log').update(patch).eq('id', id)
+  if (error) console.error('updateMeal error:', error)
 }
 
 export async function addBodyLogToSupabase(log: {
