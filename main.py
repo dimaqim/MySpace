@@ -33,7 +33,7 @@ ai             = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 claude         = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-opus-4-8"
 
 TZ = pytz.timezone(TIMEZONE)
 
