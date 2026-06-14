@@ -1027,6 +1027,434 @@ async def save_action(pending: dict) -> str:
 
     return "✅ Сохранено!"
 
+# ══════════════════════════════════════════════════════════════════════
+# ── AI-АГЕНТ (нативный tool-use Claude) ───────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+
+AGENT_TOOLS = [
+    {
+        "name": "log_food",
+        "description": "Записать съеденную еду и/или выпитые напитки в дневник питания. "
+                       "Используй для ЛЮБОГО упоминания что человек ел или пил. "
+                       "Сам определяй еда это или напиток. КБЖУ и калории посчитаются автоматически "
+                       "(ищется в базе, потом в интернете, потом оценивается). "
+                       "Можно записывать несколько продуктов и задним числом.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "Список съеденного/выпитого",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Название продукта, напр. 'курица', 'Red Bull', 'яблоко'"},
+                            "brand": {"type": "string", "description": "Бренд если назван, иначе пропусти"},
+                            "grams": {"type": "number", "description": "Количество. Если не указано — оцени по смыслу (яблоко=150, банан=120, банка=250мл, стакан=250мл)"},
+                            "unit": {"type": "string", "enum": ["г", "мл", "шт"], "description": "'мл' для напитков, 'г' для еды"}
+                        },
+                        "required": ["name", "grams", "unit"]
+                    }
+                },
+                "meal_type": {"type": "string", "enum": ["завтрак", "обед", "ужин", "перекус"], "description": "Приём пищи если указан или ясен из контекста. Если не ясно — пропусти, определится по времени."},
+                "date": {"type": "string", "description": "Дата YYYY-MM-DD. По умолчанию сегодня. Для 'вчера' — вчерашняя."}
+            },
+            "required": ["items"]
+        }
+    },
+    {
+        "name": "log_expense",
+        "description": "Записать расход (трату денег). Напр. 'потратил 450 грн на продукты'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "number"},
+                "currency": {"type": "string", "enum": ["UAH", "RUB", "USD", "EUR"], "description": "грн=UAH, руб=RUB, $=USD, €=EUR. По умолчанию UAH."},
+                "category": {"type": "string", "description": "Категория: продукты/транспорт/кафе/развлечения и т.д."},
+                "description": {"type": "string"},
+                "store_name": {"type": "string", "description": "Магазин если назван"}
+            },
+            "required": ["amount"]
+        }
+    },
+    {
+        "name": "log_income",
+        "description": "Записать доход (заработок). Напр. 'заработал 3000 грн за работу'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "number"},
+                "currency": {"type": "string", "enum": ["UAH", "RUB", "USD", "EUR"]},
+                "category": {"type": "string", "description": "зарплата/фриланс/подработка и т.д."},
+                "description": {"type": "string"}
+            },
+            "required": ["amount"]
+        }
+    },
+    {
+        "name": "create_task",
+        "description": "Создать задачу. Напр. 'завтра купить продукты'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "due_date": {"type": "string", "description": "Дата YYYY-MM-DD если указана"},
+                "priority": {"type": "string", "enum": ["low", "normal", "high"]}
+            },
+            "required": ["title"]
+        }
+    },
+    {
+        "name": "create_reminder",
+        "description": "Создать напоминание с временем. Напр. 'напомни вечером сделать тренировку'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "remind_at": {"type": "string", "description": "Дата-время ISO YYYY-MM-DDTHH:MM:SS. 'вечером'=18:00, без времени=12:00."}
+            },
+            "required": ["text", "remind_at"]
+        }
+    },
+    {
+        "name": "query_food",
+        "description": "Получить историю питания за день или период. Напр. 'что я ел вчера', 'сколько калорий позавчера'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Конкретный день YYYY-MM-DD"},
+                "from_date": {"type": "string", "description": "Начало периода YYYY-MM-DD"},
+                "to_date": {"type": "string", "description": "Конец периода YYYY-MM-DD"},
+                "meal_type": {"type": "string", "enum": ["завтрак", "обед", "ужин", "перекус"]}
+            }
+        }
+    },
+    {
+        "name": "query_finances",
+        "description": "Получить финансы за период. Напр. 'сколько потратил на прошлой неделе', 'доходы за месяц'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_date": {"type": "string"},
+                "to_date": {"type": "string"},
+                "subtype": {"type": "string", "enum": ["all", "income", "expense"]}
+            },
+            "required": ["from_date", "to_date"]
+        }
+    },
+    {
+        "name": "query_today",
+        "description": "Сводка за сегодня (еда, калории, вес, финансы). Напр. 'итог дня', 'как я сегодня'.",
+        "input_schema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "delete_food",
+        "description": "Удалить запись о еде. Напр. 'удали завтрак', 'удали вчерашний ред булл'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Дата YYYY-MM-DD, по умолчанию сегодня"},
+                "meal_type": {"type": "string", "enum": ["завтрак", "обед", "ужин", "перекус"]},
+                "product_name": {"type": "string"}
+            }
+        }
+    },
+    {
+        "name": "edit_last_food",
+        "description": "Исправить последнюю запись еды. Напр. 'поправь последнюю на 250г', 'это был обед а не завтрак'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "product_name": {"type": "string", "description": "Если правим конкретный продукт"},
+                "new_grams": {"type": "number"},
+                "new_meal_type": {"type": "string", "enum": ["завтрак", "обед", "ужин", "перекус"]}
+            }
+        }
+    },
+    {
+        "name": "add_product",
+        "description": "Добавить продукт в базу с КБЖУ на 100г. Напр. 'добавь в базу творог Простоквашино 100 ккал, белок 18'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "brand": {"type": "string"},
+                "calories": {"type": "number"},
+                "protein": {"type": "number"},
+                "fat": {"type": "number"},
+                "carbs": {"type": "number"},
+                "unit": {"type": "string", "enum": ["г", "мл"]}
+            },
+            "required": ["name", "calories"]
+        }
+    },
+    {
+        "name": "save_body_measurement",
+        "description": "Сохранить замер тела введённый текстом. Напр. 'вешу 78 кг', 'талия 82'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "weight": {"type": "number"},
+                "fat_percent": {"type": "number"},
+                "muscle_percent": {"type": "number"},
+                "waist": {"type": "number"}
+            }
+        }
+    },
+    {
+        "name": "log_workout",
+        "description": "Записать тренировку. Напр. 'тренировался час в зале'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "duration_minutes": {"type": "number"},
+                "location": {"type": "string", "enum": ["зал", "улица", "дома"]},
+                "notes": {"type": "string"}
+            }
+        }
+    }
+]
+
+
+async def _resolve_items_for_agent(raw_items: list) -> list:
+    """Разрешает КБЖУ для списка продуктов (база → интернет → оценка)."""
+    resolved = []
+    for item in raw_items:
+        try:
+            r = await _resolve_item(item, auto_search=True)
+            if not r.get("not_found"):
+                resolved.append(r)
+        except Exception as e:
+            logger.error(f"agent resolve error for {item}: {e}")
+    return resolved
+
+
+async def execute_agent_tool(name: str, inp: dict) -> str:
+    """Выполняет инструмент агента, возвращает текстовый результат для Claude."""
+    td = today_str()
+
+    if name == "log_food":
+        raw = inp.get("items", [])
+        meal_type = inp.get("meal_type")
+        log_date  = inp.get("date") or td
+        if not meal_type and log_date == td:
+            meal_type = infer_meal_by_time()
+        resolved = await _resolve_items_for_agent(raw)
+        if not resolved:
+            return "Не удалось определить продукты."
+        logged_at = now_local().isoformat()
+        for it in resolved:
+            row = {
+                "date": log_date, "logged_at": logged_at,
+                "product_name": it.get("product_name"), "grams": it.get("grams"),
+                "calories": it.get("calories"), "protein": it.get("protein"),
+                "fat": it.get("fat"), "carbs": it.get("carbs"),
+                "meal_type": meal_type, "unit": it.get("unit", "г"),
+            }
+            if it.get("product_id"):
+                row["product_id"] = it["product_id"]
+            supabase.table("food_log").insert(row).execute()
+            # Запоминаем новый продукт в базу
+            if it.get("product_name") and it.get("cal100"):
+                ex = supabase.table("products").select("id").ilike("name", f"%{it['product_name']}%").limit(1).execute()
+                if not ex.data:
+                    supabase.table("products").insert({
+                        "name": it["product_name"], "brand": it.get("brand"),
+                        "calories": it.get("cal100"), "protein": it.get("pro100"),
+                        "fat": it.get("fat100"), "carbs": it.get("carb100"),
+                    }).execute()
+                    refresh_products_cache()
+        tc = round(sum(it.get("calories") or 0 for it in resolved))
+        tp = round(sum(it.get("protein")  or 0 for it in resolved))
+        tf = round(sum(it.get("fat")      or 0 for it in resolved))
+        tcarb = round(sum(it.get("carbs") or 0 for it in resolved))
+        names = ", ".join(f"{it['product_name']} {it['grams']:g}{it.get('unit','г')}" for it in resolved)
+        est = " (оценка ИИ)" if any(it.get("auto_estimated") for it in resolved) else ""
+        ml = f" на {meal_type}" if meal_type else ""
+        dl = f" за {log_date}" if log_date != td else ""
+        return f"Записано{ml}{dl}{est}: {names}. Итого {tc} ккал, Б {tp}г Ж {tf}г У {tcarb}г."
+
+    if name == "log_expense":
+        data = {"amount": inp["amount"], "currency": inp.get("currency", "UAH"),
+                "category": inp.get("category"), "description": inp.get("description"),
+                "date": td, "type": "expense"}
+        if inp.get("store_name"):
+            ex = supabase.table("stores").select("id").ilike("name", inp["store_name"]).limit(1).execute()
+            if ex.data: data["store_id"] = ex.data[0]["id"]
+            else:
+                ns = supabase.table("stores").insert({"name": inp["store_name"]}).execute()
+                if ns.data: data["store_id"] = ns.data[0]["id"]
+            data["store_name"] = inp["store_name"]
+        supabase.table("finances").insert(data).execute()
+        return f"Расход записан: -{inp['amount']} {data['currency']} ({inp.get('category','')})."
+
+    if name == "log_income":
+        data = {"amount": inp["amount"], "currency": inp.get("currency", "UAH"),
+                "category": inp.get("category"), "description": inp.get("description"),
+                "date": td, "type": "income"}
+        supabase.table("finances").insert(data).execute()
+        return f"Доход записан: +{inp['amount']} {data['currency']} ({inp.get('category','')})."
+
+    if name == "create_task":
+        supabase.table("tasks").insert({
+            "title": inp["title"], "due_date": inp.get("due_date"),
+            "priority": inp.get("priority", "normal")
+        }).execute()
+        return f"Задача создана: «{inp['title']}»" + (f" на {inp['due_date']}" if inp.get("due_date") else "")
+
+    if name == "create_reminder":
+        supabase.table("reminders").insert({
+            "text": inp["text"], "remind_at": inp["remind_at"], "is_sent": False
+        }).execute()
+        try:
+            dt = datetime.fromisoformat(inp["remind_at"])
+            if dt.tzinfo is None: dt = TZ.localize(dt)
+            when = dt.astimezone(TZ).strftime("%d.%m в %H:%M")
+        except:
+            when = inp["remind_at"]
+        return f"Напоминание создано на {when}: «{inp['text']}»."
+
+    if name == "query_food":
+        if inp.get("from_date") and inp.get("to_date"):
+            return get_food_period(inp["from_date"], inp["to_date"])
+        return get_food_history(inp.get("date") or td, inp.get("meal_type"))
+
+    if name == "query_finances":
+        return get_finance_history(inp["from_date"], inp["to_date"], inp.get("subtype", "all"))
+
+    if name == "query_today":
+        return get_today_stats()
+
+    if name == "delete_food":
+        del_date = inp.get("date") or td
+        all_day = supabase.table("food_log").select("*").eq("date", del_date).execute().data or []
+        if not all_day:
+            return f"За {del_date} нет записей о еде."
+        rows = list(all_day)
+        if inp.get("meal_type"):
+            f = [r for r in rows if (r.get("meal_type") or "").lower() == inp["meal_type"].lower()]
+            if f: rows = f
+        if inp.get("product_name"):
+            f = [r for r in rows if inp["product_name"].lower() in (r.get("product_name") or "").lower()]
+            if f: rows = f
+        cal = round(sum(r.get("calories") or 0 for r in rows))
+        names = ", ".join(r["product_name"] for r in rows)
+        for r in rows:
+            supabase.table("food_log").delete().eq("id", r["id"]).execute()
+        return f"Удалено: {names} ({cal} ккал)."
+
+    if name == "edit_last_food":
+        if inp.get("product_name"):
+            rows = supabase.table("food_log").select("*").eq("date", td) \
+                .ilike("product_name", f"%{inp['product_name']}%").order("created_at", desc=True).limit(1).execute().data or []
+        else:
+            rows = supabase.table("food_log").select("*").eq("date", td) \
+                .order("created_at", desc=True).limit(1).execute().data or []
+        if not rows:
+            return "Нет записи для исправления."
+        row = rows[0]; updates = {}; changes = []
+        if inp.get("new_grams") is not None:
+            old_g = float(row.get("grams") or 100); ng = float(inp["new_grams"])
+            ratio = ng / old_g if old_g else 1
+            updates["grams"] = ng
+            for k in ("calories", "protein", "fat", "carbs"):
+                updates[k] = round((row.get(k) or 0) * ratio, 1)
+            changes.append(f"{old_g:g}→{ng:g}{row.get('unit','г')}")
+        if inp.get("new_meal_type"):
+            updates["meal_type"] = inp["new_meal_type"]; changes.append(f"приём→{inp['new_meal_type']}")
+        if not updates:
+            return "Нечего исправлять."
+        supabase.table("food_log").update(updates).eq("id", row["id"]).execute()
+        return f"Исправлено: {row['product_name']} ({', '.join(changes)})."
+
+    if name == "add_product":
+        unit = inp.get("unit", "г")
+        cat = "напиток" if unit == "мл" else infer_category(inp["name"], unit)
+        supabase.table("products").insert({
+            "name": inp["name"], "brand": inp.get("brand"),
+            "calories": inp["calories"], "protein": inp.get("protein", 0),
+            "fat": inp.get("fat", 0), "carbs": inp.get("carbs", 0),
+            "category": cat, "default_unit": unit,
+        }).execute()
+        refresh_products_cache()
+        return f"Продукт «{inp['name']}» добавлен в базу."
+
+    if name == "save_body_measurement":
+        data = {k: inp[k] for k in ("weight", "fat_percent", "muscle_percent", "waist") if inp.get(k) is not None}
+        data["date"] = td
+        supabase.table("body_measurements").upsert(data, on_conflict="date").execute()
+        return "Замер тела сохранён."
+
+    if name == "log_workout":
+        supabase.table("workouts").insert({
+            "date": td, "duration_minutes": inp.get("duration_minutes"),
+            "location": inp.get("location"), "notes": inp.get("notes"),
+        }).execute()
+        return "Тренировка записана."
+
+    return f"Неизвестный инструмент: {name}"
+
+
+AGENT_SYSTEM = """Ты — личный AI-помощник Димы в Telegram. Помогаешь вести питание, финансы, задачи, здоровье.
+
+ПРИНЦИПЫ:
+1. Понимай естественную речь (русский/украинский, голос, обрывки). Не требуй команд.
+2. Действуй сразу через инструменты — не переспрашивай если смысл ясен. Уточняй ТОЛЬКО когда без этого никак.
+3. Одно сообщение может содержать НЕСКОЛЬКО действий — вызови несколько инструментов (поел + потратил = log_food + log_expense).
+4. Отвечай КОРОТКО и по-человечески, 1-3 строки. Без таблиц, без ## заголовков, без markdown-разметки кроме *жирного*.
+5. Еду и напитки записывай через log_food (сам отличай еду от напитков по unit).
+6. После записи коротко подтверди что записал и назови итог (калории/сумму). Не выдумывай числа — бери из результата инструмента.
+
+КОНТЕКСТ ДАТ: {dates}
+Если человек просто болтает или спрашивает то что не покрыто инструментами — ответь дружелюбно и кратко как помощник."""
+
+
+async def run_agent(text: str, ctx_str: str = "") -> str:
+    """Главный цикл AI-агента с нативным tool-use."""
+    now = now_local()
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    dbefore   = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    dates = (f"сегодня={today_str()}, вчера={yesterday}, позавчера={dbefore}, "
+             f"сейчас {now.strftime('%H:%M')}, день недели {now.weekday()} (0=пн).")
+    system = AGENT_SYSTEM.replace("{dates}", dates)
+
+    user_content = text
+    if ctx_str:
+        user_content = f"[Недавний контекст диалога:\n{ctx_str}\n]\n\nСообщение: {text}"
+
+    messages = [{"role": "user", "content": user_content}]
+    import asyncio
+
+    for _ in range(6):  # максимум 6 итераций tool-use
+        resp = await asyncio.wait_for(
+            claude.messages.create(
+                model=CLAUDE_MODEL, max_tokens=1500,
+                system=system, tools=AGENT_TOOLS, messages=messages,
+            ), timeout=50
+        )
+        if resp.stop_reason != "tool_use":
+            # Финальный текстовый ответ
+            parts = [b.text for b in resp.content if b.type == "text"]
+            return "\n".join(parts).strip() or "Готово."
+
+        messages.append({"role": "assistant", "content": resp.content})
+        tool_results = []
+        for block in resp.content:
+            if block.type == "tool_use":
+                logger.info(f"agent tool: {block.name} {json.dumps(block.input, ensure_ascii=False)[:200]}")
+                try:
+                    result = await execute_agent_tool(block.name, block.input)
+                except Exception as e:
+                    logger.error(f"tool {block.name} error: {e}")
+                    result = f"Ошибка выполнения: {e}"
+                tool_results.append({
+                    "type": "tool_result", "tool_use_id": block.id, "content": result
+                })
+        messages.append({"role": "user", "content": tool_results})
+
+    return "Готово."
+
+
 # ── Статистика ────────────────────────────────────────────────────────
 
 def get_today_stats() -> str:
@@ -1411,414 +1839,29 @@ async def process_message(update: Update, context: ContextTypes.DEFAULT_TYPE, te
             await update.message.reply_text("Отменено.")
             return
 
-    # Классификация (с контекстом последних сообщений)
+    # ── AI-агент (нативный tool-use Claude) ──
     try:
-        c = await classify(text, context_str=ctx_str)
-        msg_type = c.get("type")
-        data     = c.get("data", {})
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except Exception:
+        pass
+    try:
+        reply = await run_agent(text, ctx_str=ctx_str)
     except Exception as e:
-        logger.error(f"classify error: {e}")
-        await notify_error(context.bot, f"classify: {e}\nТекст: {text[:200]}")
-        await update.message.reply_text("⚠️ Не понял запрос. Попробуй ещё раз.")
+        logger.error(f"agent error: {e}")
+        await notify_error(context.bot, f"agent: {e}\nТекст: {text[:200]}")
+        await update.message.reply_text("⚠️ Что-то пошло не так. Попробуй переформулировать.")
         return
 
-    # Если пришёл новый multi_meal при открытом pending — сбрасываем старый
-    if msg_type == "multi_meal" and pending and pending["type"] in ("food_log", "multi_meal", "meal_session"):
-        clear_pending(pending["id"])
-        pending = None
-
-    # ── food_clarify: уточнение граммов ──
-    if msg_type == "food_clarify" and pending and pending["type"] == "food_log":
-        new_grams = float(data.get("grams", 100))
-        items = pending["data"].get("items", [])
-        if items:
-            old_grams = items[0]["grams"]
-            if old_grams and old_grams != new_grams:
-                unit_lbl = items[0].get("unit", "г")
-                await update.message.reply_text(f"⏳ Пересчитываю на {new_grams}{unit_lbl}...")
-                ratio = new_grams / old_grams
-                items[0]["grams"]    = new_grams
-                items[0]["calories"] = round((items[0].get("calories") or 0) * ratio, 1)
-                items[0]["protein"]  = round((items[0].get("protein")  or 0) * ratio, 1)
-                items[0]["fat"]      = round((items[0].get("fat")      or 0) * ratio, 1)
-                items[0]["carbs"]    = round((items[0].get("carbs")    or 0) * ratio, 1)
-            save_pending("food_log", {"items": items}, update.message.message_id)
-            await update.message.reply_text(fmt_food(items), parse_mode="Markdown")
-            return
-
-    # ── food_log ──
-    if msg_type == "food_log":
-        # Поддерживаем оба формата: список (старый) и dict с date/meal_type (новый)
-        if isinstance(data, dict):
-            raw          = data.get("items", [])
-            log_date     = data.get("date", today_str())
-            meal_type_fl = data.get("meal_type")
-        else:
-            raw          = data if isinstance(data, list) else []
-            log_date     = today_str()
-            meal_type_fl = None
-
-        # Если приём пищи не указан и запись за сегодня — определяем по времени
-        if not meal_type_fl and log_date == today_str():
-            meal_type_fl = infer_meal_by_time()
-
-        if not raw:
-            await update.message.reply_text("Не понял что ты съел. Напиши например: «съел 200г гречки и куриную грудку 150г»")
-            return
-
-        await update.message.reply_text("⏳ Проверяю базу продуктов...")
-        resolved  = []
-        not_found = None
-
-        for item in raw:
-            try:
-                result = await _resolve_item(item, auto_search=False)
-                if result.get("not_found"):
-                    not_found = result
-                    break
-                resolved.append(result)
-            except Exception as e:
-                logger.error(f"resolve error for {item}: {e}")
-
-        if not_found:
-            brand     = not_found.get("brand")
-            brand_str = f" ({brand})" if brand else ""
-            save_pending("product_lookup_choice", {
-                "product_name":   not_found["name"],
-                "brand":          brand,
-                "grams":          not_found["grams"],
-                "unit":           not_found.get("unit", "г"),
-                "resolved_items": resolved,
-                "log_date":       log_date,
-                "meal_type":      meal_type_fl,
-                "manual_mode":    False,
-            }, update.message.message_id)
-            await update.message.reply_text(
-                f"🔍 Продукта «{not_found['name']}{brand_str}» нет в моей базе.\n\n"
-                f"Что делаем?\n"
-                f"• Напиши *«поищи»* — найду данные в интернете\n"
-                f"• Напиши *«добавлю сам»* — укажи бренд и КБЖУ на 100г\n"
-                f"• Или сразу напиши КБЖУ: «на 100г: 250 ккал, белки 8г, жиры 3г, углеводы 45г»",
-                parse_mode="Markdown"
-            )
-            return
-
-        pending_data = {"items": resolved, "date": log_date, "meal_type": meal_type_fl}
-        save_pending("food_log", pending_data, update.message.message_id)
-        await update.message.reply_text(fmt_food(resolved, log_date, meal_type_fl), parse_mode="Markdown")
-        _summary = ", ".join(f"{it['product_name']} {it['grams']}{it.get('unit','г')}" for it in resolved)
-        remember_msg(chat_id, "bot", f"показал к записи ({meal_type_fl or 'без приёма'}): {_summary}")
-
-    # ── food_log_known_macros: съел X г + КБЖУ указан для этого количества ──
-    elif msg_type == "food_log_known_macros":
-        grams    = float(data.get("grams", 100))
-        calories = float(data.get("calories", 0))
-        protein  = float(data.get("protein", 0))
-        fat      = float(data.get("fat", 0))
-        carbs    = float(data.get("carbs", 0))
-        name     = data.get("name", "продукт")
-        brand    = data.get("brand")
-        unit     = data.get("unit", "г")
-
-        ratio100 = 100 / grams if grams else 1
-        cal100   = round(calories * ratio100, 1)
-        pro100   = round(protein  * ratio100, 1)
-        fat100   = round(fat      * ratio100, 1)
-        carb100  = round(carbs    * ratio100, 1)
-
-        # Сохраняем продукт в базу если его нет
-        existing = find_in_db(name, brand)
-        if not existing:
-            save_product_to_db(name, brand, cal100, pro100, fat100, carb100)
-
-        item = {
-            "product_name": name, "grams": grams, "unit": unit, "brand": brand,
-            "calories": calories, "protein": protein, "fat": fat, "carbs": carbs,
-            "cal100": cal100, "pro100": pro100, "fat100": fat100, "carb100": carb100,
-            "auto_estimated": False,
-        }
-        save_pending("food_log", {"items": [item]}, update.message.message_id)
-        await update.message.reply_text(
-            f"📝 *Записать в дневник?*\n\n"
-            f"• {name}: {grams}{unit} — {round(calories)} ккал\n"
-            f"  Б {round(protein)}г | Ж {round(fat)}г | У {round(carbs)}г\n\n"
-            f"_(сохраню в базу на 100г: {cal100} ккал | Б {pro100}г | Ж {fat100}г | У {carb100}г)_\n\n"
-            f"Подтверждаешь?", parse_mode="Markdown"
-        )
-
-    # ── meal_session: новый приём пищи с несколькими продуктами ──
-    elif msg_type == "multi_meal":
-        meals = data.get("meals", [])
-        meals = [m for m in meals if m.get("items")]  # убираем пустые (ужин без продуктов)
-        if not meals:
-            await update.message.reply_text("Не понял состав. Назови продукты и граммы.")
-            return
-        await update.message.reply_text("⏳ Ищу КБЖУ для всех продуктов...")
-        resolved_meals = []
-        for meal in meals:
-            resolved_items = []
-            for item in meal.get("items", []):
-                try:
-                    resolved_items.append(await _resolve_item(item))
-                except Exception as e:
-                    logger.error(f"resolve {item}: {e}")
-            if resolved_items:
-                resolved_meals.append({
-                    "meal_type": meal.get("meal_type", "приём пищи"),
-                    "date": meal.get("date", today_str()),
-                    "items": resolved_items,
-                })
-        if not resolved_meals:
-            await update.message.reply_text("Не смог найти КБЖУ. Попробуй ещё раз.")
-            return
-        # Показываем все приёмы пищи
-        lines = []
-        total_cal = total_p = total_f = total_c = 0
-        for meal in resolved_meals:
-            lines.append(fmt_meal_session({"meal_type": meal["meal_type"], "items": meal["items"]}, show_footer=False))
-            total_cal += sum(it.get("calories", 0) for it in meal["items"])
-            total_p   += sum(it.get("protein",  0) for it in meal["items"])
-            total_f   += sum(it.get("fat",      0) for it in meal["items"])
-            total_c   += sum(it.get("carbs",    0) for it in meal["items"])
-        lines.append(f"\n📊 *Итого за день:* {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
-        lines.append("\nВсё верно? Сохраняю?\n*(«да» — записываю / «нет» — отмена)*")
-        save_pending("multi_meal", {"meals": resolved_meals}, update.message.message_id)
-        await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
-
-    elif msg_type == "meal_session":
-        raw_items = data.get("items", [])
-        meal_type = data.get("meal_type", "приём пищи")
-        if not raw_items:
-            await update.message.reply_text("Не понял состав. Назови продукты и граммы.")
-            return
-        await update.message.reply_text(f"⏳ Ищу КБЖУ для всех продуктов...")
-        resolved = []
-        for item in raw_items:
-            try:
-                resolved.append(await _resolve_item(item))
-            except Exception as e:
-                logger.error(f"resolve {item}: {e}")
-        if not resolved:
-            await update.message.reply_text("Не смог найти КБЖУ. Попробуй ещё раз.")
-            return
-        session_data = {"meal_type": meal_type, "items": resolved}
-        save_pending("meal_session", session_data, update.message.message_id)
-        await update.message.reply_text(fmt_meal_session(session_data), parse_mode="Markdown")
-
-    elif msg_type == "add_product":
-        save_pending("add_product", data, update.message.message_id)
-        await update.message.reply_text(
-            f"📦 *Добавить продукт в базу?*\n\n{data.get('name')}\n"
-            f"на 100г: {data.get('calories')} ккал | Б {data.get('protein')}г | Ж {data.get('fat')}г | У {data.get('carbs')}г\n\n"
-            f"Подтверждаешь?", parse_mode="Markdown"
-        )
-
-    elif msg_type == "body_measurement":
-        save_pending("body_measurement", data, update.message.message_id)
-        await update.message.reply_text(fmt_measurement(data), parse_mode="Markdown")
-
-    elif msg_type == "expense":
-        save_pending("expense", data, update.message.message_id)
-        await update.message.reply_text(fmt_expense(data), parse_mode="Markdown")
-
-    elif msg_type == "income":
-        save_pending("income", data, update.message.message_id)
-        await update.message.reply_text(fmt_income(data), parse_mode="Markdown")
-
-    elif msg_type == "workout":
-        save_pending("workout", data, update.message.message_id)
-        await update.message.reply_text(fmt_workout(data), parse_mode="Markdown")
-
-    elif msg_type == "reminder":
-        save_pending("reminder", data, update.message.message_id)
-        await update.message.reply_text(fmt_reminder(data), parse_mode="Markdown")
-
-    elif msg_type == "daily_goals":
-        save_pending("daily_goals", data, update.message.message_id)
-        hw = data.get("has_workout", False) if isinstance(data, dict) else False
-        await update.message.reply_text(
-            f"Посчитать цели на сегодня {'с тренировкой 💪' if hw else 'без тренировки 🛋'}?\n\nПодтверждаешь?"
-        )
-
-    elif msg_type == "habit_log":
-        save_pending("habit_log", data, update.message.message_id)
-        status = "✅" if data.get("done", True) else "❌"
-        await update.message.reply_text(f"{status} Отметить привычку «{data['habit_name']}»?\n\nПодтверждаешь?")
-
-    elif msg_type == "task":
-        save_pending("task", data, update.message.message_id)
-        due = f" (до {data['due_date']})" if data.get("due_date") else ""
-        await update.message.reply_text(f"📝 Добавить задачу?\n\n«{data['title']}»{due}\n\nПодтверждаешь?")
-
-    elif msg_type == "goal":
-        save_pending("goal", data, update.message.message_id)
-        await update.message.reply_text(f"🎯 Записать цель?\n\n«{data['title']}»\n\nПодтверждаешь?")
-
-    elif msg_type == "query_today":
-        await update.message.reply_text(get_today_stats(), parse_mode="Markdown")
-
-    elif msg_type == "query_workout":
-        await update.message.reply_text(get_workout_stats(), parse_mode="Markdown")
-
-    elif msg_type == "query_food":
-        d = data if isinstance(data, dict) else {}
-        q_date     = d.get("date")
-        from_date  = d.get("from_date")
-        to_date    = d.get("to_date")
-        q_meal     = d.get("meal_type")
-        if from_date and to_date:
-            await update.message.reply_text(get_food_period(from_date, to_date), parse_mode="Markdown")
-        elif q_date:
-            await update.message.reply_text(get_food_history(q_date, q_meal), parse_mode="Markdown")
-        else:
-            await update.message.reply_text(get_food_stats_today(), parse_mode="Markdown")
-
-    elif msg_type == "query_finances":
-        d = data if isinstance(data, dict) else {}
-        from_date = d.get("from_date", today_str())
-        to_date   = d.get("to_date",   today_str())
-        subtype   = d.get("subtype", "all")
-        if d.get("period") == "week":
-            from_date = (date.today() - timedelta(days=date.today().weekday())).isoformat()
-        elif d.get("period") == "month":
-            from_date = date.today().replace(day=1).isoformat()
-        await update.message.reply_text(get_finance_history(from_date, to_date, subtype), parse_mode="Markdown")
-
-    elif msg_type == "query_weight":
-        rows = supabase.table("body_measurements").select("date,weight,fat_percent,muscle_percent,bmr").order("date", desc=True).limit(10).execute().data or []
-        if not rows:
-            await update.message.reply_text("Нет замеров. Отправь скриншот умных весов!")
-            return
-        lines = ["📊 *Динамика веса:*\n"]
-        for r in rows:
-            fat = f", жир {r['fat_percent']}%" if r.get("fat_percent") else ""
-            lines.append(f"• {r['date']}: {r['weight']} кг{fat}")
-        if len(rows) >= 2:
-            diff = round(rows[0]["weight"] - rows[-1]["weight"], 1)
-            lines.append(f"\nИзменение: {diff:+} кг за {len(rows)} замеров")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-    elif msg_type == "edit_food_log":
-        target       = data.get("target", "last")
-        edit_product = data.get("product_name")
-        new_grams    = data.get("new_grams")
-        new_meal     = data.get("new_meal_type")
-        td           = today_str()
-
-        # Находим запись для правки: по продукту или последнюю за сегодня
-        if target == "product" and edit_product:
-            rows = supabase.table("food_log").select("*").eq("date", td) \
-                .ilike("product_name", f"%{edit_product}%").order("created_at", desc=True).limit(1).execute().data or []
-        else:
-            rows = supabase.table("food_log").select("*").eq("date", td) \
-                .order("created_at", desc=True).limit(1).execute().data or []
-
-        if not rows:
-            await update.message.reply_text("Нет записи для исправления. Сначала запиши еду.")
-            return
-
-        row = rows[0]
-        updates = {}
-        changes = []
-
-        if new_grams is not None:
-            old_g = float(row.get("grams") or 100)
-            ng    = float(new_grams)
-            ratio = ng / old_g if old_g else 1
-            updates["grams"]    = ng
-            updates["calories"] = round((row.get("calories") or 0) * ratio, 1)
-            updates["protein"]  = round((row.get("protein")  or 0) * ratio, 1)
-            updates["fat"]      = round((row.get("fat")      or 0) * ratio, 1)
-            updates["carbs"]    = round((row.get("carbs")    or 0) * ratio, 1)
-            unit = row.get("unit", "г")
-            changes.append(f"{old_g:g}{unit} → {ng:g}{unit}")
-
-        if new_meal:
-            updates["meal_type"] = new_meal
-            changes.append(f"приём → {new_meal}")
-
-        if not updates:
-            await update.message.reply_text("Не понял что исправить. Напиши например «поправь последнюю на 250г».")
-            return
-
-        supabase.table("food_log").update(updates).eq("id", row["id"]).execute()
-        new_cal = round(updates.get("calories", row.get("calories") or 0))
-        reply = f"✏️ Исправлено: *{row['product_name']}*\n" + "\n".join(f"• {c}" for c in changes) + f"\n→ {new_cal} ккал"
+    import re
+    reply = re.sub(r'#{1,6}\s*', '', reply)
+    reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
+    if not reply:
+        reply = "Готово."
+    try:
         await update.message.reply_text(reply, parse_mode="Markdown")
-        remember_msg(chat_id, "bot", reply)
-
-    elif msg_type == "delete_food_log":
-        del_date     = data.get("date") or today_str()
-        del_meal     = data.get("meal_type")
-        del_product  = data.get("product_name")
-        td           = today_str()
-
-        date_label = "вчера" if del_date != td else "сегодня"
-
-        # Берём ВСЕ записи за этот день
-        all_day = supabase.table("food_log").select("*").eq("date", del_date).execute().data or []
-
-        if not all_day:
-            await update.message.reply_text(f"За {date_label} ({del_date}) вообще нет записей о еде.")
-            return
-
-        # Фильтруем по приёму пищи и продукту, но мягко
-        rows = list(all_day)
-        used_meal_filter = False
-        used_prod_filter = False
-        if del_meal:
-            filtered = [r for r in rows if (r.get("meal_type") or "").lower() == del_meal.lower()]
-            if filtered:
-                rows = filtered
-                used_meal_filter = True
-        if del_product:
-            filtered = [r for r in rows if del_product.lower() in (r.get("product_name") or "").lower()]
-            if filtered:
-                rows = filtered
-                used_prod_filter = True
-
-        # Поясняем если точного совпадения не было, но что-то за день есть
-        note = ""
-        if del_meal and not used_meal_filter:
-            note = f"_(записи «{del_meal}» нет, но за {date_label} есть это:)_\n\n"
-        elif del_product and not used_prod_filter:
-            note = f"_(«{del_product}» не нашёл, но за {date_label} есть это:)_\n\n"
-
-        lines = [f"🗑 *Удалить за {date_label}?*\n", note] if note else [f"🗑 *Удалить за {date_label}?*\n"]
-        for r in rows:
-            unit = r.get("unit", "г")
-            mt   = f"[{r.get('meal_type')}] " if r.get("meal_type") else ""
-            lines.append(f"• {mt}{r['product_name']}: {r['grams']}{unit} — {round(r.get('calories') or 0)} ккал")
-        total = round(sum(r.get("calories") or 0 for r in rows))
-        lines.append(f"\n*Итого: {total} ккал*")
-        lines.append("\n*«да»* — удаляю | *«нет»* — отмена")
-
-        ids = [r["id"] for r in rows]
-        save_pending("delete_food_log", {"ids": ids, "total_cal": total}, update.message.message_id)
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-    else:
-        # general_chat
-        stats = get_today_stats()
-        reply = await gpt(
-            f"Ты личный ассистент-трекер. Отвечаешь ТОЛЬКО по темам: еда, калории, вес, тренировки, финансы.\n"
-            f"Данные пользователя сегодня:\n{stats}\n\n"
-            f"СТРОГИЕ ПРАВИЛА ОТВЕТА:\n"
-            f"1. Максимум 3-5 строк. Никаких длинных текстов.\n"
-            f"2. ЗАПРЕЩЕНО использовать: ### заголовки, ## заголовки, таблицы (|), горизонтальные линии (---)\n"
-            f"3. Можно использовать только: *жирный*, обычный текст, bullet points (•)\n"
-            f"4. Если вопрос не по теме (новости, погода, политика и т.д.) — ответь одной строкой: Я твой личный трекер. Спроси меня про еду, вес или финансы.\n"
-            f"5. Никаких ссылок, никаких смайликов",
-            text
-        )
-        # Чистим markdown который Telegram не поддерживает
-        import re
-        reply = re.sub(r'#{1,6}\s*', '', reply)       # убираем ## заголовки
-        reply = re.sub(r'\|.*\|', '', reply)           # убираем таблицы
-        reply = re.sub(r'\n-{3,}\n', '\n', reply)      # убираем ---
-        reply = re.sub(r'\n{3,}', '\n\n', reply)       # убираем лишние пустые строки
-        reply = reply.strip()
-        await update.message.reply_text(reply, parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(reply)
+    remember_msg(chat_id, "bot", reply)
 
 # ── Handlers ─────────────────────────────────────────────────────────
 
