@@ -66,6 +66,11 @@ export async function deleteProductFromSupabase(id: string) {
   if (error) console.error('deleteProduct error:', error)
 }
 
+export async function deleteBodyMeasurementForDate(date: string) {
+  const { error } = await supabase.from('body_measurements').delete().eq('date', date)
+  if (error) console.error('deleteBody error:', error)
+}
+
 export async function updateProductInSupabase(id: string, p: {
   name?: string; cal100?: number; pro100?: number; fat100?: number; carb100?: number
 }) {

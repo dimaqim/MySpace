@@ -5,6 +5,7 @@ import {
   addBodyLogToSupabase,
   deleteMealFromSupabase,
   deleteProductFromSupabase,
+  deleteBodyMeasurementForDate,
   updateProductInSupabase,
   updateMealInSupabase,
   updateDailyGoalsInSupabase,
@@ -33,6 +34,7 @@ import {
   Search,
   Settings,
   Sun,
+  Trash2,
   Sparkles,
   Target,
   TrendingUp,
@@ -1453,6 +1455,14 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
   const [addHealth, setAddHealth] = useState(false);
   const weightChart = (data.bodyLogs ?? []).slice(-14).map((b) => ({ date: b.date.slice(5), weight: b.weight, fat: b.fatPct, muscle: b.musclePct }));
 
+  const todayStr = iso(0);
+  const hasTodayBody = (data.bodyLogs ?? []).some((b) => b.date === todayStr);
+  const handleResetToday = () => {
+    if (!window.confirm("Сбросить сегодняшнее взвешивание? Данные удалятся и из Supabase.")) return;
+    setData((p) => ({ ...p, bodyLogs: (p.bodyLogs ?? []).filter((b) => b.date !== todayStr) }));
+    deleteBodyMeasurementForDate(todayStr);
+  };
+
   return (
     <PageGrid>
       <Kpi title="Сон" value={`${latest?.sleep ?? 0} ч`} sub="последняя ночь" icon={Moon} tone="blue" />
@@ -1467,7 +1477,18 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
               <h2 className="text-base font-semibold">Состав тела</h2>
               <p className="text-sm text-slate-500">Последнее взвешивание: {latestBody.date}</p>
             </div>
-            <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер</button>
+            <div className="flex gap-2">
+              {hasTodayBody && (
+                <button
+                  onClick={handleResetToday}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-900/50 px-3 py-2 text-sm font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
+                  title="Удалить сегодняшнее взвешивание"
+                >
+                  <Trash2 size={15} />Сбросить сегодня
+                </button>
+              )}
+              <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер</button>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
             {BODY_FIELDS.map(({ key, label, unit, color }) => (
