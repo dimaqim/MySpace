@@ -32,7 +32,6 @@ import {
   Plus,
   Search,
   Settings,
-  Smile,
   Sun,
   Sparkles,
   Target,
@@ -70,7 +69,6 @@ type Page =
   | "tasks"
   | "habits"
   | "goals"
-  | "mood"
   | "journal"
   | "calendar"
   | "analytics"
@@ -84,8 +82,7 @@ type Mood = "focus" | "calm" | "good" | "low";
 type Transaction = { id: string; date: string; time: string; title: string; category: string; type: TxType; amount: number; currency: Currency; personName?: string };
 type FoodItem = { id: string; name: string; cal100: number; pro100: number; fat100: number; carb100: number };
 type Meal = { id: string; date: string; name: string; mealType: string; calories: number; protein: number; fat: number; carbs: number; weight: number; foodId?: string };
-type HealthLog = { id: string; date: string; sleep: number; water: number; mood: number };
-type MoodEntry = { id: string; datetime: string; value: number; label: string };
+type HealthLog = { id: string; date: string; sleep: number; water: number };
 type BodyLog = { id: string; date: string; weight: number; bmi: number; fatPct: number; musclePct: number; waterPct: number; boneMass: number; metabolism: number; proteinPct: number; bodyAge: number; visceralFat: number; fatKg: number; leanMass: number; muscleKg: number; proteinKg: number };
 type Workout = { id: string; date: string; type: string; duration: number; calories: number; steps: number };
 type Task = { id: string; title: string; status: TaskStatus; priority: "low" | "medium" | "high"; due: string };
@@ -107,7 +104,6 @@ type AppData = {
   journal: JournalEntry[];
   events: EventItem[];
   settings: SettingsData;
-  moodLog: MoodEntry[];
   expenseCategories: string[];
   incomeCategories: string[];
 };
@@ -188,13 +184,13 @@ const mockData: AppData = {
     { id: id(), date: iso(-3), name: "Овсянка", mealType: "Завтрак", calories: 293, protein: 10, fat: 6, carbs: 48, weight: 80 },
   ],
   health: [
-    { id: id(), date: iso(-6), sleep: 7.1, water: 2.4, mood: 7 },
-    { id: id(), date: iso(-5), sleep: 6.7, water: 2.1, mood: 6 },
-    { id: id(), date: iso(-4), sleep: 7.8, water: 2.7, mood: 8 },
-    { id: id(), date: iso(-3), sleep: 6.2, water: 1.8, mood: 6 },
-    { id: id(), date: iso(-2), sleep: 7.4, water: 2.6, mood: 8 },
-    { id: id(), date: iso(-1), sleep: 7.0, water: 2.2, mood: 7 },
-    { id: id(), date: iso(0), sleep: 7.6, water: 1.9, mood: 8 },
+    { id: id(), date: iso(-6), sleep: 7.1, water: 2.4 },
+    { id: id(), date: iso(-5), sleep: 6.7, water: 2.1 },
+    { id: id(), date: iso(-4), sleep: 7.8, water: 2.7 },
+    { id: id(), date: iso(-3), sleep: 6.2, water: 1.8 },
+    { id: id(), date: iso(-2), sleep: 7.4, water: 2.6 },
+    { id: id(), date: iso(-1), sleep: 7.0, water: 2.2 },
+    { id: id(), date: iso(0), sleep: 7.6, water: 1.9 },
   ],
   bodyLogs: [
     { id: id(), date: iso(-2), weight: 78.1, bmi: 25.2, fatPct: 24.8, musclePct: 32.4, waterPct: 52.9, boneMass: 3.1, metabolism: 1838, proteinPct: 15.8, bodyAge: 31, visceralFat: 8, fatKg: 19.4, leanMass: 58.7, muscleKg: 25.3, proteinKg: 12.3 },
@@ -238,51 +234,6 @@ const mockData: AppData = {
     { id: id(), date: iso(6), title: "Monthly finance close", time: "10:00", type: "Finance" },
   ],
   settings: { caloriesGoal: 2200, proteinGoal: 150, fatGoal: 70, carbsGoal: 250, waterGoal: 2.5, sleepGoal: 7.5, monthlyBudget: 15000, compactMode: false },
-  moodLog: [
-    { id: id(), datetime: `${iso(0)}T09:15:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(0)}T12:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(0)}T16:30:00`, value: 9, label: "Огонь" },
-    { id: id(), datetime: `${iso(-1)}T08:30:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-1)}T13:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-1)}T19:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-2)}T09:00:00`, value: 1, label: "Устал" },
-    { id: id(), datetime: `${iso(-2)}T14:00:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-2)}T21:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-3)}T10:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-3)}T15:00:00`, value: 9, label: "Огонь" },
-    { id: id(), datetime: `${iso(-4)}T09:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-4)}T14:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-4)}T20:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-5)}T08:00:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-5)}T16:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-5)}T22:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-6)}T09:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-6)}T12:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-6)}T18:00:00`, value: 9, label: "Огонь" },
-    { id: id(), datetime: `${iso(-7)}T10:00:00`, value: 1, label: "Устал" },
-    { id: id(), datetime: `${iso(-7)}T15:00:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-7)}T20:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-8)}T09:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-8)}T17:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-9)}T08:00:00`, value: 9, label: "Огонь" },
-    { id: id(), datetime: `${iso(-9)}T14:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-10)}T09:00:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-10)}T17:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-11)}T10:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-11)}T20:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-12)}T09:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-13)}T14:00:00`, value: 9, label: "Огонь" },
-    { id: id(), datetime: `${iso(-14)}T09:00:00`, value: 1, label: "Устал" },
-    { id: id(), datetime: `${iso(-14)}T15:00:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-14)}T21:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-15)}T10:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-16)}T09:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-16)}T18:00:00`, value: 9, label: "Огонь" },
-    { id: id(), datetime: `${iso(-17)}T08:00:00`, value: 3, label: "Норм" },
-    { id: id(), datetime: `${iso(-18)}T09:00:00`, value: 5, label: "Хорошо" },
-    { id: id(), datetime: `${iso(-19)}T14:00:00`, value: 7, label: "Отлично" },
-    { id: id(), datetime: `${iso(-20)}T10:00:00`, value: 9, label: "Огонь" },
-  ],
   expenseCategories: DEFAULT_EXPENSE_CATS,
   incomeCategories: DEFAULT_INCOME_CATS,
 };
@@ -301,14 +252,12 @@ function loadData(): AppData {
       transactions: (parsed.transactions ?? mockData.transactions).map((t) => ({ ...t, time: t.time ?? "00:00" })),
       foods: parsed.foods ?? mockData.foods,
       bodyLogs: parsed.bodyLogs ?? mockData.bodyLogs,
-      moodLog: parsed.moodLog ?? mockData.moodLog,
       expenseCategories: parsed.expenseCategories ?? DEFAULT_EXPENSE_CATS,
       incomeCategories: parsed.incomeCategories ?? DEFAULT_INCOME_CATS,
       health: (parsed.health ?? mockData.health).map((h) => ({
         id: h.id, date: h.date,
         sleep: h.sleep ?? 0,
         water: h.water ?? 0,
-        mood: h.mood ?? 5,
       })),
     };
   } catch {
@@ -325,7 +274,6 @@ const nav = [
   ["tasks", CheckCircle2, "Задачи"],
   ["habits", Flame, "Привычки"],
   ["goals", Goal, "Цели"],
-  ["mood", Smile, "Настроение"],
   ["journal", Sparkles, "Журнал"],
   ["calendar", CalendarDays, "Календарь"],
   ["analytics", BarChart3, "Аналитика"],
@@ -483,7 +431,6 @@ function App() {
           {page === "tasks" && <Tasks data={data} setData={setData} add={add} />}
           {page === "habits" && <Habits data={data} setData={setData} add={add} />}
           {page === "goals" && <Goals data={data} add={add} />}
-          {page === "mood" && <MoodPage data={data} setData={setData} />}
           {page === "journal" && <Journal data={data} add={add} />}
           {page === "calendar" && <CalendarPage data={data} add={add} openEvent={setEventModal} />}
           {page === "analytics" && <Analytics data={data} />}
@@ -637,11 +584,9 @@ function Progress({ value, color = "bg-accent" }: { value: number; color?: strin
   return <div className="h-2.5 rounded-full bg-slate-100"><div className={`h-full rounded-full ${color}`} style={{ width: `${Math.max(0, Math.min(value, 100))}%` }} /></div>;
 }
 
-const MOOD_EMOJIS: [number, string, string][] = [[1, "😴", "Устал"], [3, "😐", "Норм"], [5, "🙂", "Хорошо"], [7, "😄", "Отлично"], [9, "🔥", "Огонь"]];
 
 function Today({ data, metrics, setData, setPage, openEvent, period }: { data: AppData; metrics: ReturnType<typeof getMetrics>; setData: React.Dispatch<React.SetStateAction<AppData>>; setPage: (p: Page) => void; openEvent: (e: EventItem) => void; period: Period }) {
   const finance = chart7(data.transactions, (xs) => ({ income: xs.filter((x) => x.type === "income").reduce((s, x) => s + x.amount, 0), expense: xs.filter((x) => x.type === "expense").reduce((s, x) => s + x.amount, 0) })) as Array<{ date: string; income: number; expense: number }>;
-  const mood = chart7(data.health, (xs) => ({ mood: xs[0]?.mood ?? 6 })) as Array<{ date: string; mood: number }>;
   const latestMeals = data.meals.filter((m) => m.date === iso(0));
   const spendingBars = finance.map((d) => Math.max(14, Math.min(96, Number(d.expense) / 12 + 28)));
 
@@ -652,31 +597,6 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
   const todayTasks = period === "Today"
     ? data.tasks.filter((t) => t.status !== "done" && t.due === iso(0))
     : data.tasks.filter((t) => t.status !== "done");
-
-  const moodLog = data.moodLog ?? [];
-  const lastMoodEntry = moodLog[0] ?? null;
-  const todayMoodEntries = moodLog.filter((e) => e.datetime.startsWith(iso(0)));
-  const currentMood = lastMoodEntry?.value ?? 0;
-
-  const handleMoodLog = (val: number) => {
-    const moodLabel = MOOD_EMOJIS.find(([v]) => v === val)?.[2] ?? "Норм";
-    const entry: MoodEntry = {
-      id: id(),
-      datetime: localDatetime(),
-      value: val,
-      label: moodLabel,
-    };
-    setData((p) => ({ ...p, moodLog: [entry, ...(p.moodLog ?? [])] }));
-  };
-
-  const todayMoodAvg = todayMoodEntries.length > 0
-    ? Math.round((todayMoodEntries.reduce((s, e) => s + e.value, 0) / todayMoodEntries.length) * 10) / 10
-    : currentMood;
-
-  const circleRadius = 13;
-  const circleCircumference = 2 * Math.PI * circleRadius;
-  const strokeOffset = circleCircumference - (todayMoodAvg / 9) * circleCircumference;
-  const circleColor = MOOD_COLOR(Math.round(todayMoodAvg));
 
   const toggleHabit = (habit: Habit) => {
     const done = habit.doneDates.includes(iso(0));
@@ -706,7 +626,6 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
             ["Вода", `${metrics.latestHealth?.water ?? 0}L`, Activity],
             ["Задачи", `${metrics.activeTasks}`, CheckCircle2],
             ["Привычки", `${metrics.doneHabits}/${data.habits.length}`, Flame],
-            ["Настроение", currentMood ? `${currentMood}/10` : "—", HeartPulse],
           ] as [string, string, typeof Activity][]).map(([label, value, Icon]) => (
             <div className="brief-kpi" key={label}>
               <Icon size={17} />
@@ -729,54 +648,6 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
           <div className="action-pills">
             <button onClick={() => setPage("finance")}><CircleDollarSign size={19} />Доход: {money.format(metrics.income)}</button>
             <button onClick={() => setPage("finance")}><Wallet size={19} />Расход: {money.format(metrics.expenses)}</button>
-          </div>
-
-          {/* Quick mood log */}
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 22, marginBottom: 10 }}>
-            <h2>Настроение</h2>
-            <button onClick={() => setPage("mood")} style={{ fontSize: 12, fontWeight: 650, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}>
-              Аналитика →
-            </button>
-          </div>
-          {/* Status row */}
-          {lastMoodEntry && (
-            <div className="flex items-center gap-2.5 mb-3 px-3.5 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--glass-thin)] shadow-sm">
-              <span style={{ fontSize: 24 }}>{MOOD_EMOJIS.find(([v]) => v === lastMoodEntry.value)?.[1]}</span>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>{lastMoodEntry.label}</div>
-                <div style={{ fontSize: 11, color: "var(--ink2)" }}>{fmtTime(lastMoodEntry.datetime)} · Сегодня {todayMoodEntries.length} запис{todayMoodEntries.length === 1 ? "ь" : "и"}</div>
-              </div>
-              <div style={{ marginLeft: "auto", position: "relative", width: 34, height: 34, display: "grid", placeItems: "center" }}>
-                <svg width="34" height="34" style={{ transform: "rotate(-90deg)" }}>
-                  <circle cx="17" cy="17" r={circleRadius} fill="none" stroke="var(--border)" strokeWidth="2.5" />
-                  <circle cx="17" cy="17" r={circleRadius} fill="none" stroke={circleColor} strokeWidth="2.5"
-                    strokeDasharray={circleCircumference} strokeDashoffset={strokeOffset} strokeLinecap="round"
-                    style={{ transition: "stroke-dashoffset 0.3s ease" }} />
-                </svg>
-                <span className="absolute text-[10px] font-extrabold text-[var(--ink)]">{todayMoodAvg}</span>
-              </div>
-            </div>
-          )}
-          {/* Emoji buttons */}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {MOOD_EMOJIS.map(([val, emoji, label]) => (
-              <button
-                key={val}
-                onClick={() => handleMoodLog(val)}
-                title={label}
-                style={{
-                  display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-                  width: 60, paddingTop: 10, paddingBottom: 8, borderRadius: 18,
-                  border: `2px solid ${currentMood === val ? "var(--accent)" : "var(--border)"}`,
-                  background: currentMood === val ? "var(--accent-glow)" : "var(--glass-thin)",
-                  cursor: "pointer", transition: "all 0.15s", fontSize: 26, lineHeight: 1,
-                  boxShadow: currentMood === val ? "0 4px 14px var(--accent-glow)" : "var(--specular)",
-                }}
-              >
-                {emoji}
-                <span style={{ fontSize: 10, fontWeight: 700, color: currentMood === val ? "var(--accent)" : "var(--ink2)" }}>{label}</span>
-              </button>
-            ))}
           </div>
 
           {/* Habits checklist */}
@@ -864,7 +735,7 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
             <button>{new Date().toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} <ChevronDown size={16} /></button>
           </div>
           <ChartWrap>
-            <AreaChart data={finance.map((f, i) => ({ ...f, mood: (mood[i]?.mood ?? 6) * 750 }))}>
+            <AreaChart data={finance}>
               <defs>
                 <linearGradient id="premiumFill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#8FB6FF" stopOpacity={0.68} />
@@ -876,7 +747,6 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
               <YAxis hide />
               <Tooltip />
               <Area type="monotone" dataKey="income" stroke="#8FB6FF" fill="url(#premiumFill)" strokeWidth={4} />
-              <Line type="monotone" dataKey="mood" stroke="var(--ink)" strokeWidth={3} dot={false} />
             </AreaChart>
           </ChartWrap>
         </section>
@@ -897,10 +767,6 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
         <Card>
           <SectionTitle title="Ближайшие события" />
           <div className="space-y-2">{data.events.slice(0, 4).map((e) => <button key={e.id} onClick={() => openEvent(e)} className="event-row"><span>{e.time}</span><strong>{e.title}</strong><small>{e.date}</small></button>)}</div>
-        </Card>
-        <Card>
-          <SectionTitle title="Mood за 7 дней" />
-          <ChartWrap small><LineChart data={mood}><XAxis dataKey="date" hide /><YAxis hide domain={[0, 10]} /><Tooltip /><Line type="monotone" dataKey="mood" stroke="var(--accent)" strokeWidth={3} dot={{ r: 3 }} /></LineChart></ChartWrap>
         </Card>
         <Card>
           <SectionTitle title="Цели" />
@@ -1649,7 +1515,7 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
       {/* Buttons */}
       <div className="xl:col-span-3 flex gap-3">
         <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер тела</button>
-        <button className="primary-btn" style={{ background: "linear-gradient(135deg,#0EA5E9,#0284C7)" }} onClick={() => setAddHealth(true)}><Plus size={16} />Сон / Вода / Настроение</button>
+        <button className="primary-btn" style={{ background: "linear-gradient(135deg,#0EA5E9,#0284C7)" }} onClick={() => setAddHealth(true)}><Plus size={16} />Сон / Вода</button>
       </div>
 
       {/* Body logs history */}
@@ -1681,7 +1547,7 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
         </Modal>
       )}
       {addHealth && (
-        <Modal title="Сон / Вода / Настроение" close={() => setAddHealth(false)}>
+        <Modal title="Сон / Вода" close={() => setAddHealth(false)}>
           <HealthForm add={add} after={() => setAddHealth(false)} />
         </Modal>
       )}
@@ -2246,58 +2112,6 @@ function Analytics({ data }: { data: AppData }) {
 
   const healthChartData = getHealthChartData();
 
-  // --- MOOD DATA ---
-  const moodLog = data.moodLog ?? [];
-  const fMoods = filterByPeriod(moodLog);
-  const pMoods = filterByPrevPeriod(moodLog);
-  const avgMoodVal = fMoods.length ? moodAvg(fMoods) : 0;
-  const prevAvgMoodVal = pMoods.length ? moodAvg(pMoods) : 0;
-  const moodChange = getPercentChange(avgMoodVal, prevAvgMoodVal);
-
-  const labelCounts = fMoods.reduce((acc, entry) => {
-    acc[entry.label] = (acc[entry.label] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  const moodDistribution = Object.entries(labelCounts).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value);
-  const domMood = moodDistribution[0]?.name ?? "—";
-
-  const getMoodChartData = () => {
-    if (period === "day") {
-      return Array.from({ length: 24 }, (_, h) => {
-        const label = `${h}:00`;
-        const hrMoods = fMoods.filter(m => parseInt(m.datetime?.slice(11, 13) ?? "0") === h);
-        return { label, mood: hrMoods.length ? moodAvg(hrMoods) : null };
-      }).filter(d => d.mood !== null);
-    }
-    if (period === "week") {
-      return Array.from({ length: 7 }, (_, i) => {
-        const d = iso(i - 6);
-        const label = new Date(d).toLocaleDateString("ru-RU", { weekday: "short" });
-        const dayMoods = moodLog.filter(m => m.datetime?.slice(0, 10) === d);
-        return { label, mood: dayMoods.length ? moodAvg(dayMoods) : null };
-      });
-    }
-    if (period === "month") {
-      return Array.from({ length: 30 }, (_, i) => {
-        const d = iso(i - 29);
-        const label = d.slice(8, 10);
-        const dayMoods = moodLog.filter(m => m.datetime?.slice(0, 10) === d);
-        return { label, mood: dayMoods.length ? moodAvg(dayMoods) : null };
-      });
-    }
-    return Array.from({ length: 12 }, (_, i) => {
-      const d = new Date();
-      d.setMonth(d.getMonth() - (11 - i));
-      const label = d.toLocaleDateString("ru-RU", { month: "short" });
-      const yearMonth = d.toISOString().slice(0, 7);
-      const monthMoods = moodLog.filter(m => m.datetime?.startsWith(yearMonth));
-      return { label, mood: monthMoods.length ? moodAvg(monthMoods) : null };
-    });
-  };
-
-  const moodChartData = getMoodChartData();
-
   // --- TASKS & GOALS ---
   const fTasks = filterByPeriod(data.tasks);
   const tasksDone = fTasks.filter(t => t.status === "done").length;
@@ -2576,69 +2390,8 @@ function Analytics({ data }: { data: AppData }) {
         </Card>
       </div>
 
-      {/* ─── MOOD & TASKS/GOALS ROW ─── */}
-      <div className="grid gap-6 grid-cols-1 xl:grid-cols-2">
-        {/* MOOD CARD */}
-        <Card>
-          <SectionTitle title="Аналитика настроения" sub="Динамика психологического состояния" />
-          {fMoods.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-slate-400 dark:text-slate-500">
-              <Smile size={36} className="opacity-40 mb-2" />
-              <p className="text-sm font-medium">Нет записей о настроении</p>
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <div className="grid grid-cols-3 gap-3">
-                <div className="p-3 bg-[var(--glass-thin)] rounded-xl border border-[var(--border-thin)]">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Среднее</span>
-                  <div className="text-lg font-bold text-indigo-500 mt-1">{avgMoodVal} / 10</div>
-                  <span className={`text-[10px] font-bold ${avgMoodVal >= prevAvgMoodVal ? "text-emerald-500" : "text-rose-500"}`}>{moodChange} vs п.п.</span>
-                </div>
-                <div className="p-3 bg-[var(--glass-thin)] rounded-xl border border-[var(--border-thin)]">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Доминантное</span>
-                  <div className="text-lg font-bold text-pink-500 mt-1">{domMood}</div>
-                  <span className="text-[10px] text-slate-400 font-medium">из {fMoods.length} записей</span>
-                </div>
-                <div className="p-3 bg-[var(--glass-thin)] rounded-xl border border-[var(--border-thin)]">
-                  <span className="text-[10px] uppercase font-bold text-slate-400">Стабильность</span>
-                  <div className="text-lg font-bold text-emerald-500 mt-1">
-                    {fMoods.length > 2 ? "Высокая" : "Мало данных"}
-                  </div>
-                </div>
-              </div>
-
-              <ChartWrap small>
-                <AreaChart data={moodChartData}>
-                  <defs>
-                    <linearGradient id="colorMood" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.2}/>
-                      <stop offset="95%" stopColor="#4F46E5" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid vertical={false} stroke="var(--grid-line)" />
-                  <XAxis dataKey="label" tickLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
-                  <YAxis hide domain={[1, 10]} />
-                  <Tooltip />
-                  <Area type="monotone" name="Настроение" dataKey="mood" stroke="#4F46E5" strokeWidth={3} fillOpacity={1} fill="url(#colorMood)" dot={{ r: 3 }} />
-                </AreaChart>
-              </ChartWrap>
-
-              {/* Mood states distribution list */}
-              <div className="space-y-1.5">
-                <h4 className="text-[10px] uppercase font-bold text-slate-400">Частота состояний:</h4>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {moodDistribution.slice(0, 4).map(({ name, value }) => (
-                    <div key={name} className="flex justify-between items-center p-2 bg-[var(--glass-thin)] rounded-lg border border-[var(--border-thin)]">
-                      <span className="font-semibold">{name}</span>
-                      <span className="font-bold text-slate-500">{value} раз</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </Card>
-
+      {/* ─── TASKS/GOALS ROW ─── */}
+      <div className="grid gap-6 grid-cols-1">
         {/* TASKS & GOALS CARD */}
         <Card>
           <SectionTitle title="Задачи и Цели" sub="Выполнение планов и прогресс по целям" />
@@ -2692,243 +2445,6 @@ function Analytics({ data }: { data: AppData }) {
         </Card>
       </div>
     </div>
-  );
-}
-
-// ─── Mood helpers ────────────────────────────────────────────────
-const MOOD_COLOR = (v: number) => v >= 8 ? "var(--mood-best)" : v >= 6 ? "var(--mood-good)" : v >= 4 ? "var(--mood-neutral)" : "var(--mood-low)";
-const MOOD_BG = (v: number) => v >= 8 ? "var(--mood-best-glow)" : v >= 6 ? "var(--mood-good-glow)" : v >= 4 ? "var(--mood-neutral-glow)" : "var(--mood-low-glow)";
-const MOOD_CAT = (v: number) => v >= 6 ? "Хорошее" : v >= 3 ? "Нейтральное" : "Плохое";
-
-function moodAvg(entries: MoodEntry[]): number {
-  if (!entries.length) return 0;
-  return Math.round((entries.reduce((s, e) => s + e.value, 0) / entries.length) * 10) / 10;
-}
-
-function MoodPage({ data, setData }: { data: AppData; setData: React.Dispatch<React.SetStateAction<AppData>> }) {
-  const [viewPeriod, setViewPeriod] = useState<"today" | "week" | "month" | "year">("week");
-  const moodLog = data.moodLog ?? [];
-
-  // ── Today: group by hour ──────────────────────────────
-  const todayEntries = moodLog.filter((e) => e.datetime.startsWith(iso(0)));
-  const hourlyData = Array.from({ length: 24 }, (_, h) => {
-    const hrs = todayEntries.filter((e) => Number(e.datetime.slice(11, 13)) === h);
-    return { hour: `${h}:00`, value: hrs.length ? moodAvg(hrs) : null, count: hrs.length };
-  }).filter((d) => d.value !== null);
-
-  // ── Week: avg per day ─────────────────────────────────
-  const weekData = Array.from({ length: 7 }, (_, i) => {
-    const date = iso(i - 6);
-    const entries = moodLog.filter((e) => e.datetime.startsWith(date));
-    return { date: date.slice(5), value: moodAvg(entries), count: entries.length };
-  });
-
-  // ── Month: avg per day for last 30 days ───────────────
-  const monthData = Array.from({ length: 30 }, (_, i) => {
-    const date = iso(i - 29);
-    const entries = moodLog.filter((e) => e.datetime.startsWith(date));
-    return { date: date.slice(5), value: moodAvg(entries) || null };
-  }).filter((d) => d.value);
-
-  // ── Year: avg per calendar month ─────────────────────
-  const MONTHS_RU = ["Янв","Фев","Мар","Апр","Май","Июн","Июл","Авг","Сен","Окт","Ноя","Дек"];
-  const yearNow = iso(0).slice(0, 4);
-  const yearData = Array.from({ length: 12 }, (_, i) => {
-    const month = String(i + 1).padStart(2, "0");
-    const entries = moodLog.filter((e) => e.datetime.startsWith(`${yearNow}-${month}`));
-    return { month: MONTHS_RU[i], value: entries.length ? moodAvg(entries) : null, count: entries.length };
-  });
-
-  // ── Chart data by current view ────────────────────────
-  const chartData =
-    viewPeriod === "today" ? hourlyData.map((d) => ({ label: d.hour, value: d.value })) :
-    viewPeriod === "week"  ? weekData.map((d) => ({ label: d.date, value: d.value })) :
-    viewPeriod === "month" ? monthData.map((d) => ({ label: d.date, value: d.value })) :
-                             yearData.map((d) => ({ label: d.month, value: d.value }));
-
-  // ── Frequency distribution ────────────────────────────
-  const freqData = MOOD_EMOJIS.map(([val, emoji, label]) => ({
-    name: `${emoji} ${label}`, value: val,
-    count: moodLog.filter((e) => e.value === val).length,
-  })).filter((d) => d.count > 0);
-
-  // ── Good / Neutral / Bad breakdown ───────────────────
-  const total = moodLog.length;
-  const goodCount = moodLog.filter((e) => e.value >= 6).length;
-  const neutralCount = moodLog.filter((e) => e.value >= 3 && e.value < 6).length;
-  const badCount = moodLog.filter((e) => e.value < 3).length;
-  const pieData = [
-    { name: "Хорошее", value: goodCount, fill: "#30D158" },
-    { name: "Нейтральное", value: neutralCount, fill: "#FF9F0A" },
-    { name: "Плохое", value: badCount, fill: "#FF453A" },
-  ].filter((d) => d.value > 0);
-
-  // ── Summary stats ─────────────────────────────────────
-  const overallAvg = moodAvg(moodLog);
-  const todayAvg = moodAvg(todayEntries);
-  const bestEmoji = MOOD_EMOJIS.reduce((best, cur) =>
-    moodLog.filter((e) => e.value === cur[0]).length > moodLog.filter((e) => e.value === best[0]).length ? cur : best
-  , MOOD_EMOJIS[0]);
-
-  const handleMoodLog = (val: number) => {
-    const moodLabel = MOOD_EMOJIS.find(([v]) => v === val)?.[2] ?? "Норм";
-    setData((p) => ({ ...p, moodLog: [{ id: id(), datetime: localDatetime(), value: val, label: moodLabel }, ...(p.moodLog ?? [])] }));
-  };
-  const currentMood = moodLog[0]?.value ?? 0;
-
-  const PERIOD_LABELS = { today: "Сегодня", week: "7 дней", month: "30 дней", year: "Год" };
-
-  return (
-    <PageGrid>
-      {/* Quick mood log */}
-      <div className="card xl:col-span-3 !p-5 shadow-soft">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-base font-semibold">Отметить настроение</h2>
-            <p className="text-sm text-slate-500 mt-0.5">Сегодня {todayEntries.length} записей · Среднее {todayAvg > 0 ? todayAvg : "—"}/9</p>
-          </div>
-          {moodLog[0] && (
-            <div className="flex items-center gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--glass-thin)] px-3 py-2 text-sm font-semibold">
-              <span style={{ fontSize: 20 }}>{MOOD_EMOJIS.find(([v]) => v === moodLog[0].value)?.[1]}</span>
-              <div>
-                <div>{moodLog[0].label}</div>
-                <div className="text-xs font-normal text-slate-400">{fmtTime(moodLog[0].datetime)}</div>
-              </div>
-            </div>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {MOOD_EMOJIS.map(([val, emoji, label]) => (
-            <button key={val} onClick={() => handleMoodLog(val)}
-              style={{
-                display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-                flex: 1, minWidth: 64, paddingTop: 12, paddingBottom: 10, borderRadius: 18,
-                border: `2px solid ${currentMood === val ? "var(--accent)" : "var(--border)"}`,
-                background: currentMood === val ? "var(--accent-glow)" : "var(--glass-thin)",
-                cursor: "pointer", transition: "all 0.15s", fontSize: 28, lineHeight: 1,
-                boxShadow: currentMood === val ? "0 4px 14px var(--accent-glow)" : "var(--specular)",
-              }}>
-              {emoji}
-              <span style={{ fontSize: 11, fontWeight: 700, color: currentMood === val ? "var(--accent)" : "var(--ink2)" }}>{label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* KPIs */}
-      <Kpi title="Среднее за всё время" value={`${overallAvg}/9`} sub={`${total} записей`} icon={TrendingUp} tone="green" />
-      <Kpi title="Среднее сегодня" value={todayAvg > 0 ? `${todayAvg}/9` : "—"} sub={`${todayEntries.length} записей`} icon={Smile} />
-      <Kpi title="Топ настроение" value={`${bestEmoji[1]} ${bestEmoji[2]}`} sub={`${moodLog.filter((e) => e.value === bestEmoji[0]).length} раз`} icon={Sparkles} tone="green" />
-
-      {/* Main trend chart */}
-      <Card className="xl:col-span-2">
-        <div className="mb-4 flex items-center justify-between">
-          <SectionTitle title={`Динамика — ${PERIOD_LABELS[viewPeriod]}`} />
-          <div className="flex rounded-full border border-[var(--border)] bg-[var(--glass-heavy)] p-1 gap-0.5 shadow-soft">
-            {(Object.keys(PERIOD_LABELS) as (keyof typeof PERIOD_LABELS)[]).map((p) => (
-              <button key={p} onClick={() => setViewPeriod(p)}
-                style={{ color: viewPeriod === p ? "" : "var(--ink2)" }}
-                className={`rounded-full px-3 py-1 text-xs font-bold transition ${viewPeriod === p ? "bg-accent text-white shadow" : ""}`}>
-                {PERIOD_LABELS[p]}
-              </button>
-            ))}
-          </div>
-        </div>
-        <ChartWrap>
-          <LineChart data={chartData}>
-            <CartesianGrid vertical={false} stroke="var(--grid-line)" />
-            <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
-            <YAxis hide domain={[0, 10]} />
-            <Tooltip formatter={(v: unknown) => [`${v}/9`, "Настроение"]} />
-            <Line type="monotone" dataKey="value" stroke="var(--accent)" strokeWidth={3} dot={{ r: 4, fill: "var(--accent)" }} connectNulls />
-          </LineChart>
-        </ChartWrap>
-      </Card>
-
-      {/* Good/Neutral/Bad pie */}
-      <Card>
-        <SectionTitle title="Хорошее / Нейтр. / Плохое" />
-        <ChartWrap>
-          <PieChart>
-            <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={95} paddingAngle={3}>
-              {pieData.map((d, i) => <Cell key={i} fill={d.fill} />)}
-            </Pie>
-            <Tooltip formatter={(v: unknown, name: unknown) => [`${Math.round((Number(v) / total) * 100)}% (${v} раз)`, name as string]} />
-          </PieChart>
-        </ChartWrap>
-        <div className="flex justify-around mt-2">
-          {pieData.map((d) => (
-            <div key={d.name} className="text-center">
-              <div className="text-lg font-bold" style={{ color: d.fill }}>{Math.round((d.value / total) * 100)}%</div>
-              <div className="text-xs text-slate-500">{d.name}</div>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* Frequency bar */}
-      <Card className="xl:col-span-2">
-        <SectionTitle title="Частота по типам" />
-        <ChartWrap small>
-          <BarChart data={freqData} layout="vertical">
-            <XAxis type="number" hide />
-            <YAxis type="category" dataKey="name" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 13 }} width={110} />
-            <Tooltip formatter={(v: unknown) => [`${v} раз`, "Количество"]} />
-            <Bar dataKey="count" radius={[0, 8, 8, 0]}>
-              {freqData.map((d, i) => <Cell key={i} fill={MOOD_COLOR(d.value)} />)}
-            </Bar>
-          </BarChart>
-        </ChartWrap>
-      </Card>
-
-      {/* Hourly today if has data */}
-      {todayEntries.length > 0 && (
-        <Card>
-          <SectionTitle title="Сегодня по часам" />
-          <ChartWrap small>
-            <BarChart data={hourlyData}>
-              <XAxis dataKey="hour" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 10 }} />
-              <YAxis hide domain={[0, 10]} />
-              <Tooltip formatter={(v: unknown) => [`${v}/9`, "Настроение"]} />
-              <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                {hourlyData.map((d, i) => <Cell key={i} fill={MOOD_COLOR(d.value ?? 0)} />)}
-              </Bar>
-            </BarChart>
-          </ChartWrap>
-        </Card>
-      )}
-
-      {/* History log */}
-      <Card className="xl:col-span-3">
-        <SectionTitle title="История записей" sub={`Всего ${total}`} />
-        <div className="overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr><th>Дата</th><th>Время</th><th>Настроение</th><th>Уровень</th><th>Категория</th></tr>
-            </thead>
-            <tbody>
-              {moodLog.slice(0, 30).map((e) => (
-                <tr key={e.id}>
-                  <td>{new Date(e.datetime).toLocaleDateString("ru-RU")}</td>
-                  <td>{fmtTime(e.datetime)}</td>
-                  <td>
-                    <span style={{ fontSize: 18, marginRight: 6 }}>{MOOD_EMOJIS.find(([v]) => v === e.value)?.[1]}</span>
-                    <span className="font-semibold">{e.label}</span>
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-2">
-                      <div style={{ width: `${(e.value / 9) * 80}px`, height: 6, borderRadius: 999, background: MOOD_COLOR(e.value) }} />
-                      <span className="text-xs text-slate-400">{e.value}/9</span>
-                    </div>
-                  </td>
-                  <td><span className="badge" style={{ background: MOOD_BG(e.value), color: MOOD_COLOR(e.value) }}>{MOOD_CAT(e.value)}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-    </PageGrid>
   );
 }
 
@@ -3440,7 +2956,7 @@ function MealForm({ add, after }: { add: any; after?: () => void }) {
   );
 }
 function HealthForm({ add, after }: { add: any; after?: () => void }) {
-  const [f, bind] = useFormState({ sleep: "" as any, water: "" as any, mood: "" as any, date: iso(0) });
+  const [f, bind] = useFormState({ sleep: "" as any, water: "" as any, date: iso(0) });
   return (
     <Form onSubmit={() => {
       add("health", {
@@ -3448,13 +2964,11 @@ function HealthForm({ add, after }: { add: any; after?: () => void }) {
         ...f,
         sleep: Number(f.sleep) || 0,
         water: Number(f.water) || 0,
-        mood: Number(f.mood) || 0
       });
       after?.();
     }}>
       <Input label="Сон (часы)" type="number" placeholder="Введите часы сна..." {...bind("sleep")} />
       <Input label="Вода (литры)" type="number" placeholder="Введите литры воды..." {...bind("water")} />
-      <Input label="Настроение (1-10)" type="number" placeholder="Оцените настроение..." {...bind("mood")} />
       <Input label="Дата" type="date" {...bind("date")} />
     </Form>
   );
