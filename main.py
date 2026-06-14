@@ -1148,6 +1148,19 @@ AGENT_TOOLS = [
         "input_schema": {"type": "object", "properties": {}}
     },
     {
+        "name": "delete_finance",
+        "description": "Удалить запись о расходе или доходе. Напр. 'я не тратил 450 на образование, удали', 'удали последний расход'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Дата YYYY-MM-DD, по умолчанию сегодня"},
+                "subtype": {"type": "string", "enum": ["expense", "income"], "description": "Расход или доход"},
+                "category": {"type": "string", "description": "Категория если названа, напр. 'образование'"},
+                "amount": {"type": "number", "description": "Сумма если названа"}
+            }
+        }
+    },
+    {
         "name": "delete_food",
         "description": "Удалить запись о еде. Напр. 'удали завтрак', 'удали вчерашний ред булл'.",
         "input_schema": {
@@ -1342,6 +1355,28 @@ async def execute_agent_tool(name: str, inp: dict) -> str:
         for r in rows:
             supabase.table("food_log").delete().eq("id", r["id"]).execute()
         return f"Удалено: {names} ({cal} ккал)."
+
+    if name == "delete_finance":
+        fin_date = inp.get("date") or td
+        rows = supabase.table("finances").select("*").eq("date", fin_date).execute().data or []
+        if not rows:
+            return f"За {fin_date} нет финансовых записей."
+        if inp.get("subtype"):
+            f = [r for r in rows if r.get("type") == inp["subtype"]]
+            if f: rows = f
+        if inp.get("category"):
+            f = [r for r in rows if inp["category"].lower() in ((r.get("category") or "") + " " + (r.get("description") or "")).lower()]
+            if f: rows = f
+        if inp.get("amount") is not None:
+            f = [r for r in rows if abs(float(r.get("amount") or 0) - float(inp["amount"])) < 0.01]
+            if f: rows = f
+        if not rows:
+            return "Подходящих финансовых записей не найдено."
+        total = round(sum(float(r.get("amount") or 0) for r in rows))
+        descr = ", ".join(f"{r.get('category') or r.get('description') or 'без категории'} {r.get('amount')} {r.get('currency','UAH')}" for r in rows)
+        for r in rows:
+            supabase.table("finances").delete().eq("id", r["id"]).execute()
+        return f"Удалено финансовых записей: {len(rows)} ({descr}). Сумма {total}."
 
     if name == "edit_last_food":
         if inp.get("product_name"):
