@@ -1148,6 +1148,36 @@ AGENT_TOOLS = [
         "input_schema": {"type": "object", "properties": {}}
     },
     {
+        "name": "query_reminders",
+        "description": "Показать напоминания (активные/на сегодня). Напр. 'какие у меня напоминания', 'что я просил напомнить сегодня'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "enum": ["today", "upcoming", "all"], "description": "today=на сегодня, upcoming=ближайшие, all=все активные"}
+            }
+        }
+    },
+    {
+        "name": "query_tasks",
+        "description": "Показать задачи. Напр. 'какие задачи на сегодня', 'мои задачи'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "enum": ["today", "pending", "all"], "description": "today=на сегодня, pending=невыполненные, all=все"}
+            }
+        }
+    },
+    {
+        "name": "delete_reminder",
+        "description": "Удалить напоминание. Напр. 'удали напоминание про скотч', 'отмени напоминание'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Часть текста напоминания если названа"}
+            }
+        }
+    },
+    {
         "name": "delete_finance",
         "description": "Удалить запись о расходе или доходе. Напр. 'я не тратил 450 на образование, удали', 'удали последний расход'.",
         "input_schema": {
@@ -1355,6 +1385,50 @@ async def execute_agent_tool(name: str, inp: dict) -> str:
         for r in rows:
             supabase.table("food_log").delete().eq("id", r["id"]).execute()
         return f"Удалено: {names} ({cal} ккал)."
+
+    if name == "query_reminders":
+        scope = inp.get("scope", "today")
+        q = supabase.table("reminders").select("*").eq("is_sent", False).order("remind_at")
+        rows = q.execute().data or []
+        now = now_local()
+        if scope == "today":
+            rows = [r for r in rows if (r.get("remind_at") or "").startswith(td)]
+        if not rows:
+            return "Активных напоминаний нет." if scope != "today" else "На сегодня напоминаний нет."
+        out = []
+        for r in rows:
+            try:
+                dt = datetime.fromisoformat(r["remind_at"])
+                if dt.tzinfo is None: dt = TZ.localize(dt)
+                when = dt.astimezone(TZ).strftime("%d.%m %H:%M")
+            except:
+                when = r.get("remind_at", "")
+            out.append(f"{when} — {r.get('text')}")
+        return "Напоминания:\n" + "\n".join(out)
+
+    if name == "query_tasks":
+        scope = inp.get("scope", "today")
+        rows = supabase.table("tasks").select("*").order("due_date").execute().data or []
+        if scope == "today":
+            rows = [r for r in rows if r.get("due_date") == td or not r.get("due_date")]
+        if scope in ("today", "pending"):
+            rows = [r for r in rows if (r.get("status") or "pending") != "done"]
+        if not rows:
+            return "Задач нет."
+        out = [f"{'✅' if (r.get('status')=='done') else '•'} {r.get('title')}" + (f" (до {r['due_date']})" if r.get('due_date') else "") for r in rows]
+        return "Задачи:\n" + "\n".join(out)
+
+    if name == "delete_reminder":
+        q = supabase.table("reminders").select("*").eq("is_sent", False)
+        rows = q.execute().data or []
+        if inp.get("text"):
+            rows = [r for r in rows if inp["text"].lower() in (r.get("text") or "").lower()]
+        if not rows:
+            return "Подходящих напоминаний не найдено."
+        names = ", ".join(r.get("text") for r in rows)
+        for r in rows:
+            supabase.table("reminders").delete().eq("id", r["id"]).execute()
+        return f"Удалено напоминаний: {len(rows)} ({names})."
 
     if name == "delete_finance":
         fin_date = inp.get("date") or td
