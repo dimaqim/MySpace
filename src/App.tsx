@@ -326,7 +326,8 @@ function App() {
           ...prev,
           foods: products.length > 0 ? products.map(sbProductToFood) : prev.foods,
           meals: foodLog.length > 0 ? foodLog.map(sbFoodLogToMeal) : prev.meals,
-          bodyLogs: bodyMeasurements.length > 0 ? bodyMeasurements.map(sbBodyToBodyLog) : prev.bodyLogs,
+          // Замеры тела: Supabase — источник правды (пусто в базе = пусто на сайте)
+          bodyLogs: bodyMeasurements.map(sbBodyToBodyLog),
           settings: {
             ...prev.settings,
             caloriesGoal: calGoal,
@@ -1470,37 +1471,37 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
       <Kpi title="Вес" value={latestBody ? `${latestBody.weight} кг` : "—"} sub="последнее взвешивание" icon={Activity} tone="green" />
 
       {/* Body metrics grid */}
-      {latestBody && (
-        <Card className="xl:col-span-3">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-semibold">Состав тела</h2>
-              <p className="text-sm text-slate-500">Последнее взвешивание: {latestBody.date}</p>
-            </div>
-            <div className="flex gap-2">
-              {hasTodayBody && (
-                <button
-                  onClick={handleResetToday}
-                  className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-900/50 px-3 py-2 text-sm font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
-                  title="Удалить сегодняшнее взвешивание"
-                >
-                  <Trash2 size={15} />Сбросить сегодня
-                </button>
-              )}
-              <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер</button>
-            </div>
+      <Card className="xl:col-span-3">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Состав тела</h2>
+            <p className="text-sm text-slate-500">
+              {latestBody ? `Последнее взвешивание: ${latestBody.date}` : "Нет данных — пришли скриншот весов в бот"}
+            </p>
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
-            {BODY_FIELDS.map(({ key, label, unit, color }) => (
-              <div key={key} style={{ borderLeft: `3px solid ${color}` }}
-                className="rounded-xl border border-[var(--border)] bg-[var(--glass-thin)] px-3 py-3 shadow-line">
-                <div className="text-[11px] font-bold uppercase tracking-wide text-[var(--ink2)]">{label}</div>
-                <div className="mt-1 text-xl font-bold" style={{ color }}>{latestBody[key]}{unit}</div>
-              </div>
-            ))}
+          <div className="flex gap-2">
+            {hasTodayBody && (
+              <button
+                onClick={handleResetToday}
+                className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-900/50 px-3 py-2 text-sm font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
+                title="Удалить сегодняшнее взвешивание"
+              >
+                <Trash2 size={15} />Сбросить сегодня
+              </button>
+            )}
+            <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер</button>
           </div>
-        </Card>
-      )}
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+          {BODY_FIELDS.map(({ key, label, unit, color }) => (
+            <div key={key} style={{ borderLeft: `3px solid ${color}` }}
+              className="rounded-xl border border-[var(--border)] bg-[var(--glass-thin)] px-3 py-3 shadow-line">
+              <div className="text-[11px] font-bold uppercase tracking-wide text-[var(--ink2)]">{label}</div>
+              <div className="mt-1 text-xl font-bold" style={{ color }}>{latestBody ? latestBody[key] : 0}{unit}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       {/* Charts */}
       {weightChart.length > 0 && (
