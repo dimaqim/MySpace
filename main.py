@@ -2037,10 +2037,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         d = parse_json(raw)
         if d.get("weight"):
-            save_pending("body_measurement", d, update.message.message_id)
-            # Закрываем утренний запрос взвешивания
+            # Сохраняем СРАЗУ, без подтверждения (утренняя рутина)
+            d["date"] = today_str()
+            supabase.table("body_measurements").upsert(d, on_conflict="date").execute()
             clear_weigh_pending("done")
-            await update.message.reply_text(fmt_measurement(d), parse_mode="Markdown")
+            # Краткий отчёт что записали
+            lines = ["✅ *Взвешивание записано!*\n"]
+            if d.get("weight"):          lines.append(f"Вес: {d['weight']} кг")
+            if d.get("bmi"):             lines.append(f"ИМТ: {d['bmi']}")
+            if d.get("fat_percent"):     lines.append(f"Жир: {d['fat_percent']}%")
+            if d.get("muscle_percent"):  lines.append(f"Мышцы: {d['muscle_percent']}%")
+            if d.get("water_percent"):   lines.append(f"Вода: {d['water_percent']}%")
+            if d.get("bmr"):             lines.append(f"Обмен веществ: {d['bmr']} ккал")
+            lines.append(f"\n_Всего показателей: {sum(1 for v in d.values() if v not in (None, ''))-1}. Смотри на сайте → Здоровье._")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
             return
     except Exception as e:
         logger.error(f"scale image: {e}")
