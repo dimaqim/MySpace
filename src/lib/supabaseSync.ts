@@ -1,7 +1,10 @@
 import { useEffect, useCallback } from 'react'
 import { supabase } from './supabase'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const toKievDate = (d: Date) =>
+  new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kiev' }).format(d)
+
+const today = () => toKievDate(new Date())
 
 // ── Adapters: Supabase → App ──────────────────────────────────────
 
