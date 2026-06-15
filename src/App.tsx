@@ -85,7 +85,7 @@ type TaskStatus = "today" | "upcoming" | "done";
 type Mood = "focus" | "calm" | "good" | "low";
 
 type Transaction = { id: string; date: string; time: string; title: string; category: string; type: TxType; amount: number; currency: Currency; personName?: string };
-type FoodItem = { id: string; name: string; cal100: number; pro100: number; fat100: number; carb100: number };
+type FoodItem = { id: string; name: string; cal100: number; pro100: number; fat100: number; carb100: number; defaultGrams?: number; defaultUnit?: string };
 type Meal = { id: string; date: string; name: string; mealType: string; calories: number; protein: number; fat: number; carbs: number; weight: number; foodId?: string };
 type HealthLog = { id: string; date: string; sleep: number; water: number };
 type BodyLog = { id: string; date: string; weight: number; bmi: number; fatPct: number; musclePct: number; waterPct: number; boneMass: number; metabolism: number; proteinPct: number; bodyAge: number; visceralFat: number; fatKg: number; leanMass: number; muscleKg: number; proteinKg: number };
@@ -3061,6 +3061,7 @@ function MealFormSmart({ foods, add, after, defaultDate, defaultMealType }: { fo
     setSelected(food);
     setQuery(food.name);
     setShowSuggestions(false);
+    if (food.defaultGrams) setWeight(food.defaultGrams);
   };
 
   // Текущий продукт как черновик (если выбран и введён вес)

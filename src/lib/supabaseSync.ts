@@ -13,6 +13,8 @@ export function sbProductToFood(p: any) {
     pro100: p.protein,
     fat100: p.fat,
     carb100: p.carbs,
+    defaultGrams: p.default_grams ?? undefined,
+    defaultUnit: p.default_unit ?? 'г',
   }
 }
 
