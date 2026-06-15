@@ -26,6 +26,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Dumbbell,
+  Pencil,
   Flame,
   Goal,
   HeartPulse,
@@ -1164,7 +1165,10 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
   const [editingFood, setEditingFood] = useState<FoodItem | null>(null);
   const [editingMeal, setEditingMeal] = useState<any | null>(null);
   const [dbOpen, setDbOpen] = useState(false);
+  const [diaryOpen, setDiaryOpen] = useState(false);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [confirmDeleteFood, setConfirmDeleteFood] = useState<FoodItem | null>(null);
+  const [addMealForDay, setAddMealForDay] = useState<{ date: string; mealType: string } | null>(null);
 
   const handleDeleteFood = (food: FoodItem) => {
     setConfirmDeleteFood(food);
@@ -1360,51 +1364,142 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
         )}
       </Card>
 
-      {/* Meals log */}
+      {/* Diary */}
       <Card className="xl:col-span-3">
-        <SectionTitle title="Дневник питания" />
-        <div className="overflow-x-auto">
-          <table className="table">
-            <thead><tr><th>Дата</th><th>Продукт</th><th>Приём</th><th>Вес</th><th>Ккал</th><th>Б</th><th>Ж</th><th>У</th><th></th></tr></thead>
-            <tbody>
-              {[...data.meals].sort((a, b) => b.date.localeCompare(a.date)).map((m) => (
-                <tr key={m.id}>
-                  <td>{m.date}</td>
-                  <td className="font-medium">{m.name}</td>
-                  <td><span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-semibold text-accent">{m.mealType}</span></td>
-                  <td>{m.weight} {(m as any).unit ?? "г"}</td>
-                  <td className="font-semibold">{m.calories}</td>
-                  <td>{m.protein}</td>
-                  <td>{m.fat}</td>
-                  <td>{m.carbs}</td>
-                  <td>
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={() => setEditingMeal(m)}
-                        className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                        title="Редактировать"
-                      >
-                        ✏️
-                      </button>
-                      <button
-                        onClick={() => handleDeleteMeal(m.id)}
-                        className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
-                        title="Удалить запись"
-                      >
-                        🗑
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <button className="w-full flex items-center justify-between gap-2 text-left" onClick={() => setDiaryOpen((v) => !v)}>
+          <div>
+            <span className="text-base font-semibold">Дневник питания</span>
+            <span className="ml-2 text-sm text-slate-500">{[...new Set(data.meals.map((m) => m.date))].length} дней</span>
+          </div>
+          <ChevronDown size={18} className={`text-slate-400 transition-transform duration-200 ${diaryOpen ? "rotate-180" : ""}`} />
+        </button>
+        {diaryOpen && (() => {
+          // group meals by date
+          const byDate: Record<string, typeof data.meals> = {};
+          for (const m of data.meals) { (byDate[m.date] = byDate[m.date] || []).push(m); }
+          const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+          const MEAL_ORDER = ["Завтрак", "Обед", "Ужин", "Перекус", "Без приёма"];
+          const sum = (ms: typeof data.meals, key: keyof typeof data.meals[0]) =>
+            ms.reduce((s, m) => s + (Number(m[key]) || 0), 0);
+
+          return (
+            <div className="mt-4 flex flex-col gap-2">
+              {dates.length === 0 && <p className="text-sm text-slate-500 py-4 text-center">Нет записей</p>}
+              {dates.map((date) => {
+                const dayMeals = byDate[date];
+                const totalCal = Math.round(sum(dayMeals, "calories"));
+                const totalP = Math.round(sum(dayMeals, "protein") * 10) / 10;
+                const totalF = Math.round(sum(dayMeals, "fat") * 10) / 10;
+                const totalC = Math.round(sum(dayMeals, "carbs") * 10) / 10;
+                const mealCount = [...new Set(dayMeals.map((m) => m.mealType))].length;
+                const isOpen = selectedDay === date;
+
+                return (
+                  <div key={date} className="rounded-xl border border-slate-700/50 overflow-hidden">
+                    {/* Day header */}
+                    <button
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/50 transition text-left"
+                      onClick={() => setSelectedDay(isOpen ? null : date)}
+                    >
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-sm font-semibold">{date}</span>
+                        <span className="text-xs text-slate-400">
+                          {totalCal} ккал · Б: {totalP}г · Ж: {totalF}г · У: {totalC}г · {mealCount} {mealCount === 1 ? "приём" : mealCount < 5 ? "приёма" : "приёмов"}
+                        </span>
+                      </div>
+                      <ChevronDown size={16} className={`text-slate-400 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
+                    </button>
+
+                    {/* Day detail */}
+                    {isOpen && (() => {
+                      const byMeal: Record<string, typeof data.meals> = {};
+                      for (const m of dayMeals) {
+                        const mt = m.mealType || "Без приёма";
+                        (byMeal[mt] = byMeal[mt] || []).push(m);
+                      }
+                      const mealTypes = MEAL_ORDER.filter((mt) => byMeal[mt]?.length);
+
+                      return (
+                        <div className="border-t border-slate-700/50 px-4 py-3 flex flex-col gap-4">
+                          {mealTypes.map((mt) => {
+                            const items = byMeal[mt];
+                            const mCal = Math.round(sum(items, "calories"));
+                            const mP = Math.round(sum(items, "protein") * 10) / 10;
+                            const mF = Math.round(sum(items, "fat") * 10) / 10;
+                            const mC = Math.round(sum(items, "carbs") * 10) / 10;
+                            return (
+                              <div key={mt}>
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-xs font-bold uppercase tracking-wide text-accent">{mt}</span>
+                                  <span className="text-xs text-slate-400">{mCal} ккал · Б:{mP} Ж:{mF} У:{mC}</span>
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  {items.map((item) => (
+                                    <div key={item.id} className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 bg-slate-800/40 hover:bg-slate-800/70 transition">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="text-sm font-medium truncate">{item.name}</div>
+                                        <div className="text-xs text-slate-400">{item.weight}{(item as any).unit ?? "г"} · {item.calories}ккал · Б:{item.protein} Ж:{item.fat} У:{item.carbs}</div>
+                                      </div>
+                                      <div className="flex gap-1 shrink-0">
+                                        <button
+                                          onClick={() => setEditingMeal(item)}
+                                          className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-700 transition"
+                                          title="Редактировать"
+                                        ><Pencil size={13} /></button>
+                                        <button
+                                          onClick={() => handleDeleteMeal(item.id)}
+                                          className="rounded-lg p-1.5 text-rose-400 hover:bg-rose-950/30 transition"
+                                          title="Удалить"
+                                        ><Trash2 size={13} /></button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <button
+                                  className="mt-1.5 flex items-center gap-1 text-xs text-slate-500 hover:text-accent transition px-1"
+                                  onClick={() => setAddMealForDay({ date, mealType: mt })}
+                                ><Plus size={12} /> Добавить в {mt.toLowerCase()}</button>
+                              </div>
+                            );
+                          })}
+                          {/* Add to new meal type */}
+                          <div className="flex gap-2 flex-wrap pt-1 border-t border-slate-700/30">
+                            {["Завтрак","Обед","Ужин","Перекус"].filter((mt) => !byMeal[mt]).map((mt) => (
+                              <button
+                                key={mt}
+                                className="text-xs px-2 py-1 rounded-lg border border-slate-700 text-slate-400 hover:text-accent hover:border-accent transition"
+                                onClick={() => setAddMealForDay({ date, mealType: mt })}
+                              ><Plus size={11} className="inline mr-0.5" />{mt}</button>
+                            ))}
+                          </div>
+                          {/* Day total */}
+                          <div className="grid grid-cols-4 gap-2 rounded-xl bg-slate-800/60 px-4 py-3 mt-1">
+                            {[["Итого ккал", totalCal], ["Белки", `${totalP}г`], ["Жиры", `${totalF}г`], ["Углеводы", `${totalC}г`]].map(([l, v]) => (
+                              <div key={l as string} className="text-center">
+                                <div className="text-[10px] uppercase font-semibold text-slate-400">{l}</div>
+                                <div className="text-sm font-bold text-accent mt-0.5">{v}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </Card>
 
       {addMeal && (
         <Modal title="Добавить приём пищи" close={() => setAddMeal(false)}>
           <MealFormSmart foods={data.foods} add={add} after={() => setAddMeal(false)} />
+        </Modal>
+      )}
+      {addMealForDay && (
+        <Modal title={`Добавить в ${addMealForDay.mealType.toLowerCase()} · ${addMealForDay.date}`} close={() => setAddMealForDay(null)}>
+          <MealFormSmart foods={data.foods} add={add} defaultDate={addMealForDay.date} defaultMealType={addMealForDay.mealType} after={() => setAddMealForDay(null)} />
         </Modal>
       )}
       {addFood && (
@@ -2941,12 +3036,12 @@ function FoodForm({ setData, after }: { setData: React.Dispatch<React.SetStateAc
 
 type DraftItem = { id: string; name: string; foodId?: string; weight: number; calories: number; protein: number; fat: number; carbs: number };
 
-function MealFormSmart({ foods, add, after }: { foods: FoodItem[]; add: any; after?: () => void }) {
+function MealFormSmart({ foods, add, after, defaultDate, defaultMealType }: { foods: FoodItem[]; add: any; after?: () => void; defaultDate?: string; defaultMealType?: string }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<FoodItem | null>(null);
   const [weight, setWeight] = useState<number | "">(100);
-  const [mealType, setMealType] = useState("Завтрак");
-  const [date, setDate] = useState(iso(0));
+  const [mealType, setMealType] = useState(defaultMealType ?? "Завтрак");
+  const [date, setDate] = useState(defaultDate ?? iso(0));
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [items, setItems] = useState<DraftItem[]>([]);
 
