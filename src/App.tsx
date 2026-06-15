@@ -1163,13 +1163,18 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
   const [editGoals, setEditGoals] = useState(false);
   const [editingFood, setEditingFood] = useState<FoodItem | null>(null);
   const [editingMeal, setEditingMeal] = useState<any | null>(null);
+  const [dbOpen, setDbOpen] = useState(false);
+  const [confirmDeleteFood, setConfirmDeleteFood] = useState<FoodItem | null>(null);
 
-  const handleDeleteFood = (foodId: string) => {
-    setData((p) => ({
-      ...p,
-      foods: p.foods.filter((f) => f.id !== foodId),
-    }));
-    deleteProductFromSupabase(foodId);
+  const handleDeleteFood = (food: FoodItem) => {
+    setConfirmDeleteFood(food);
+  };
+
+  const confirmDelete = () => {
+    if (!confirmDeleteFood) return;
+    setData((p) => ({ ...p, foods: p.foods.filter((f) => f.id !== confirmDeleteFood.id) }));
+    deleteProductFromSupabase(confirmDeleteFood.id);
+    setConfirmDeleteFood(null);
   };
 
   const handleDeleteMeal = (mealId: string) => {
@@ -1298,50 +1303,61 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
 
       {/* Food database */}
       <Card className="xl:col-span-3">
-        <SectionTitle title="База продуктов" sub={`${data.foods.length} продуктов`} />
-        <div className="overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Продукт</th>
-                <th>Ккал/100г</th>
-                <th>Белки</th>
-                <th>Жиры</th>
-                <th>Углеводы</th>
-                <th>Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.foods.map((f) => (
-                <tr key={f.id}>
-                  <td className="font-medium">{f.name}</td>
-                  <td>{f.cal100}</td>
-                  <td>{f.pro100} г</td>
-                  <td>{f.fat100} г</td>
-                  <td>{f.carb100} г</td>
-                  <td>
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={() => setEditingFood(f)}
-                        className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                        title="Редактировать"
-                      >
-                        ✏️
-                      </button>
-                      <button
-                        onClick={() => handleDeleteFood(f.id)}
-                        className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
-                        title="Удалить"
-                      >
-                        🗑
-                      </button>
-                    </div>
-                  </td>
+        <button
+          className="w-full flex items-center justify-between gap-2 text-left"
+          onClick={() => setDbOpen((v) => !v)}
+        >
+          <div>
+            <span className="text-base font-semibold">База продуктов</span>
+            <span className="ml-2 text-sm text-slate-500">{data.foods.length} продуктов</span>
+          </div>
+          <ChevronDown size={18} className={`text-slate-400 transition-transform duration-200 ${dbOpen ? "rotate-180" : ""}`} />
+        </button>
+        {dbOpen && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Продукт</th>
+                  <th>Ккал/100г</th>
+                  <th>Белки</th>
+                  <th>Жиры</th>
+                  <th>Углеводы</th>
+                  <th>Действия</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {data.foods.map((f) => (
+                  <tr key={f.id}>
+                    <td className="font-medium">{f.name}</td>
+                    <td>{f.cal100}</td>
+                    <td>{f.pro100} г</td>
+                    <td>{f.fat100} г</td>
+                    <td>{f.carb100} г</td>
+                    <td>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => setEditingFood(f)}
+                          className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                          title="Редактировать"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => handleDeleteFood(f)}
+                          className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
+                          title="Удалить"
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
       {/* Meals log */}
@@ -1404,6 +1420,17 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
       {editingFood && (
         <Modal title="Редактировать продукт" close={() => setEditingFood(null)}>
           <FoodEditForm food={editingFood} setData={setData} after={() => setEditingFood(null)} />
+        </Modal>
+      )}
+      {confirmDeleteFood && (
+        <Modal title="Удалить продукт" close={() => setConfirmDeleteFood(null)}>
+          <div className="flex flex-col gap-4 p-2">
+            <p className="text-sm text-slate-300">Ты уверен, что хочешь удалить <strong>{confirmDeleteFood.name}</strong>?</p>
+            <div className="flex gap-2 justify-end">
+              <button className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-400 hover:bg-slate-800 transition" onClick={() => setConfirmDeleteFood(null)}>Отмена</button>
+              <button className="rounded-lg px-4 py-2 text-sm font-semibold bg-rose-600 text-white hover:bg-rose-700 transition" onClick={confirmDelete}>Да, удалить</button>
+            </div>
+          </div>
         </Modal>
       )}
       {editingMeal && (
@@ -3355,17 +3382,29 @@ function FoodEditForm({ food, setData, after }: { food: FoodItem; setData: React
   const [pro100, setPro100] = useState<number | "">(food.pro100);
   const [fat100, setFat100] = useState<number | "">(food.fat100);
   const [carb100, setCarb100] = useState<number | "">(food.carb100);
+  const [confirming, setConfirming] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setConfirming(true);
+  };
+
+  const doSave = () => {
     const patch = { name, cal100: Number(cal100) || 0, pro100: Number(pro100) || 0, fat100: Number(fat100) || 0, carb100: Number(carb100) || 0 };
-    setData((p) => ({
-      ...p,
-      foods: p.foods.map((f) => f.id === food.id ? { ...f, ...patch } : f),
-    }));
+    setData((p) => ({ ...p, foods: p.foods.map((f) => f.id === food.id ? { ...f, ...patch } : f) }));
     updateProductInSupabase(food.id, patch);
     after();
   };
+
+  if (confirming) return (
+    <div className="flex flex-col gap-4 p-2">
+      <p className="text-sm text-slate-300">Ты уверен, что хочешь внести изменения в <strong>{food.name}</strong>?</p>
+      <div className="flex gap-2 justify-end">
+        <button className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-400 hover:bg-slate-800 transition" onClick={() => setConfirming(false)}>Отмена</button>
+        <button className="primary-btn" onClick={doSave}>Да, сохранить</button>
+      </div>
+    </div>
+  );
 
   return (
     <form className="form-grid" onSubmit={handleSubmit}>
