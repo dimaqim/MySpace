@@ -595,11 +595,15 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
 
   const PERIOD_RU: Record<Period, string> = { Today: "сегодня", Week: "за неделю", Month: "за месяц", Year: "за год" };
   const periodLabel = PERIOD_RU[period];
-  const isAvg = period !== "Today";
 
   const todayTasks = period === "Today"
     ? data.tasks.filter((t) => t.status !== "done" && t.due === iso(0))
     : data.tasks.filter((t) => t.status !== "done");
+  const todayIncome = data.transactions.filter((t) => t.date === iso(0) && t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const todayExpenses = data.transactions.filter((t) => t.date === iso(0) && t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const caloriesGoal = Number(data.settings.caloriesGoal) || 2200;
+  const todayEvents = data.events.filter((e) => e.date === iso(0)).length;
+  const currentWeight = metrics.latestBody?.weight ? `${metrics.latestBody.weight} кг` : "0 кг";
 
   const toggleHabit = (habit: Habit) => {
     const done = habit.doneDates.includes(iso(0));
@@ -615,25 +619,22 @@ function Today({ data, metrics, setData, setPage, openEvent, period }: { data: A
           <h2>Твой command center</h2>
           <p>Сегодня в фокусе сон, вода и открытые задачи</p>
         </div>
-        <div className="brief-status">
-          <StatusRow good={(metrics.latestHealth?.sleep ?? 0) >= (Number(data.settings.sleepGoal) || 7.5)} label="Сон" value={`${metrics.latestHealth?.sleep ?? 0}h / цель ${data.settings.sleepGoal || "—"}h`} />
-          <StatusRow good={(metrics.latestHealth?.water ?? 0) >= (Number(data.settings.waterGoal) || 2.5)} label="Вода" value={`${metrics.latestHealth?.water ?? 0} / ${data.settings.waterGoal || "—"}L`} />
-          <StatusRow good={metrics.activeTasks < 5} label="Открытые задачи" value={`${metrics.activeTasks}`} />
-        </div>
         <div className="brief-kpis">
           {([
-            ["Баланс", money.format(metrics.balance), CircleDollarSign],
-            ["Расходы", money.format(metrics.expenses), Wallet],
-            ["Калории", isAvg ? `~${metrics.calories}/д` : `${metrics.calories}`, Utensils],
-            ["Сон", `${metrics.latestHealth?.sleep ?? 0}h`, Moon],
-            ["Вода", `${metrics.latestHealth?.water ?? 0}L`, Activity],
-            ["Задачи", `${metrics.activeTasks}`, CheckCircle2],
-            ["Привычки", `${metrics.doneHabits}/${data.habits.length}`, Flame],
-          ] as [string, string, typeof Activity][]).map(([label, value, Icon]) => (
+            ["Расходы", "сколько я сегодня потратил", money.format(todayExpenses), Wallet],
+            ["Доходы", "сколько я сегодня получил", money.format(todayIncome), Wallet],
+            ["Калории", "съедено / цель", `${metrics.calories} / ${caloriesGoal}`, Utensils],
+            ["Задачи открытые", "количество открытых задач", `${metrics.activeTasks}`, CheckCircle2],
+            ["Мой вес", "текущий вес", currentWeight, Activity],
+            ["События", "количество событий на сегодня", `${todayEvents}`, CalendarDays],
+          ] as [string, string, string, typeof Activity][]).map(([label, sub, value, Icon]) => (
             <div className="brief-kpi" key={label}>
-              <Icon size={17} />
-              <span>{label}</span>
-              <strong>{value}</strong>
+              <div className="brief-kpi-icon"><Icon size={25} /></div>
+              <div>
+                <span>{label}</span>
+                <small>{sub}</small>
+                <strong>{value}</strong>
+              </div>
             </div>
           ))}
         </div>
@@ -913,129 +914,99 @@ function PremiumFinanceChart({ txs, fmtC }: {
   const balanceChange = useMemo(() => calcPeriodChange(txs, "balance", period), [txs, period]);
 
   return (
-    <div className="finance-chart-card xl:col-span-3">
-      {/* Top Header Row with Stats and Switchers */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-6">
-        {/* Dynamic Period Stats */}
-        <div className="grid grid-cols-3 gap-6 md:gap-10">
-          <div className="flex flex-col">
-            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-400">Доходы за период</span>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <span className="text-xl md:text-2xl font-extrabold text-[var(--text-income-raw)]">{fmtC(totals.income)}</span>
-              <span className={`text-[11px] font-bold ${incomeChange >= 0 ? "text-cyan-500" : "text-rose-500"}`}>
-                {incomeChange >= 0 ? "↑" : "↓"}{Math.abs(incomeChange)}%
-              </span>
+    <div className="finance-chart-stack">
+      <div className="finance-summary-grid">
+        {([
+          ["Доходы за период", totals.income, incomeChange, TrendingUp, "income"],
+          ["Расходы за период", totals.expense, expenseChange, TrendingUp, "expense"],
+          ["Чистый баланс", totals.balance, balanceChange, Wallet, "balance"],
+        ] as [string, number, number, typeof Activity, string][]).map(([label, value, change, Icon, tone]) => (
+          <div className={`finance-summary-card ${tone}`} key={label}>
+            <div className="finance-summary-icon"><Icon size={27} /></div>
+            <div>
+              <span>{label}</span>
+              <strong>{fmtC(value)}</strong>
+              <em>{change >= 0 ? "↑" : "↓"}{Math.abs(change)}%</em>
             </div>
           </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-400">Расходы за период</span>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <span className="text-xl md:text-2xl font-extrabold text-[var(--text-expense-raw)]">{fmtC(totals.expense)}</span>
-              <span className={`text-[11px] font-bold ${expenseChange >= 0 ? "text-cyan-500" : "text-rose-500"}`}>
-                {expenseChange >= 0 ? "↑" : "↓"}{Math.abs(expenseChange)}%
-              </span>
-            </div>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-400">Чистый баланс</span>
-            <div className="flex items-baseline gap-1.5 mt-1">
-              <span className={`text-xl md:text-2xl font-extrabold ${totals.balance >= 0 ? "text-[var(--text-balance-raw)]" : "text-[var(--text-expense-raw)]"}`}>{fmtC(totals.balance)}</span>
-              <span className={`text-[11px] font-bold ${balanceChange >= 0 ? "text-cyan-500" : "text-rose-500"}`}>
-                {balanceChange >= 0 ? "↑" : "↓"}{Math.abs(balanceChange)}%
-              </span>
-            </div>
-          </div>
-        </div>
+        ))}
+      </div>
 
-        {/* Action Controls */}
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Display Switcher */}
-          <div className="flex rounded-xl border border-[var(--border)] bg-[var(--glass-thin)] p-0.5">
+      <div className="finance-graph-panel">
+        <div className="finance-chart-controls">
+          <div className="finance-segmented">
             {([
               { key: "all", label: "Все вместе" },
               { key: "income", label: "Только доходы" },
               { key: "expense", label: "Только расходы" }
             ] as const).map((mode) => (
               <button key={mode.key} onClick={() => setDisplayMode(mode.key)}
-                style={{
-                  background: displayMode === mode.key ? "var(--accent)" : "transparent",
-                  color: displayMode === mode.key ? "#fff" : "var(--ink2)",
-                  boxShadow: displayMode === mode.key ? "var(--shadow-soft)" : "none",
-                }}
-                className="rounded-lg px-3 py-1.5 text-xs font-semibold transition">
+                className={displayMode === mode.key ? "active" : ""}>
                 {mode.label}
               </button>
             ))}
           </div>
 
-          {/* Period Tabs */}
-          <div className="flex rounded-xl border border-[var(--border)] bg-[var(--glass-thin)] p-0.5">
+          <div className="finance-segmented finance-periods">
             {FP_ALL.map((p) => (
               <button key={p} onClick={() => setPeriod(p)}
-                style={{
-                  background: period === p ? "var(--accent)" : "transparent",
-                  color: period === p ? "#fff" : "var(--ink2)",
-                  boxShadow: period === p ? "var(--shadow-soft)" : "none",
-                }}
-                className="rounded-lg px-3 py-1.5 text-xs font-semibold transition">
+                className={period === p ? "active" : ""}>
                 {p}
               </button>
             ))}
           </div>
         </div>
-      </div>
 
-      {/* Chart Canvas */}
-      <div style={{ height: 260, width: "100%" }}>
-        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-          <AreaChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: 0 }}>
-            <defs>
-              <linearGradient id="grad-combined-income" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--text-income-raw)" stopOpacity={0.25} />
-                <stop offset="100%" stopColor="var(--text-income-raw)" stopOpacity={0.02} />
-              </linearGradient>
-              <linearGradient id="grad-combined-expense" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--text-expense-raw)" stopOpacity={0.25} />
-                <stop offset="100%" stopColor="var(--text-expense-raw)" stopOpacity={0.02} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid vertical={false} stroke="var(--grid-line)" strokeDasharray="0" />
-            <XAxis
-              dataKey="label"
-              tickLine={false}
-              axisLine={false}
-              tick={{ fontSize: 11, fill: "var(--ink2)", fontWeight: 600 }}
-              interval={period === "Месяц" ? 4 : period === "День" ? 3 : 0}
-            />
-            <YAxis hide domain={["auto", "auto"]} />
-            <Tooltip content={(props: any) => <FinanceCombinedTooltip {...props} fmtC={fmtC} />} />
-            
-            {(displayMode === "all" || displayMode === "income") && (
-              <Area
-                type="monotone"
-                dataKey="income"
-                name="Доходы"
-                stroke="var(--text-income-raw)"
-                strokeWidth={2.5}
-                fill="url(#grad-combined-income)"
-                dot={false}
-                activeDot={{ r: 5, fill: "var(--text-income-raw)", stroke: "white", strokeWidth: 2.5 }}
+        <div className="finance-chart-canvas">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+            <AreaChart data={data} margin={{ top: 12, right: 10, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="grad-combined-income" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--text-income-raw)" stopOpacity={0.26} />
+                  <stop offset="100%" stopColor="var(--text-income-raw)" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="grad-combined-expense" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--text-expense-raw)" stopOpacity={0.26} />
+                  <stop offset="100%" stopColor="var(--text-expense-raw)" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} stroke="var(--grid-line)" strokeDasharray="4 6" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 12, fill: "var(--ink2)", fontWeight: 700 }}
+                interval={period === "Месяц" ? 4 : period === "День" ? 3 : 0}
               />
-            )}
-            {(displayMode === "all" || displayMode === "expense") && (
-              <Area
-                type="monotone"
-                dataKey="expense"
-                name="Расходы"
-                stroke="var(--text-expense-raw)"
-                strokeWidth={2.5}
-                fill="url(#grad-combined-expense)"
-                dot={false}
-                activeDot={{ r: 5, fill: "var(--text-expense-raw)", stroke: "white", strokeWidth: 2.5 }}
-              />
-            )}
-          </AreaChart>
-        </ResponsiveContainer>
+              <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "var(--ink2)", fontWeight: 700 }} width={42} />
+              <Tooltip content={(props: any) => <FinanceCombinedTooltip {...props} fmtC={fmtC} />} />
+              {(displayMode === "all" || displayMode === "income") && (
+                <Area
+                  type="monotone"
+                  dataKey="income"
+                  name="Доходы"
+                  stroke="var(--text-income-raw)"
+                  strokeWidth={3}
+                  fill="url(#grad-combined-income)"
+                  dot={false}
+                  activeDot={{ r: 5, fill: "var(--text-income-raw)", stroke: "white", strokeWidth: 2.5 }}
+                />
+              )}
+              {(displayMode === "all" || displayMode === "expense") && (
+                <Area
+                  type="monotone"
+                  dataKey="expense"
+                  name="Расходы"
+                  stroke="var(--text-expense-raw)"
+                  strokeWidth={3}
+                  fill="url(#grad-combined-expense)"
+                  dot={false}
+                  activeDot={{ r: 5, fill: "var(--text-expense-raw)", stroke: "white", strokeWidth: 2.5 }}
+                />
+              )}
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
@@ -1084,28 +1055,29 @@ function Finance({ data, add, setData }: { data: AppData; add: any; setData: Rea
 
   return (
     <PageGrid>
-      {/* Currency switcher */}
-      <div className="card xl:col-span-3 flex items-center justify-between gap-4 !py-3 !px-5 shadow-soft">
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
-          {rateLoading ? "Загружаем курс…" : `Курс: 1 USD = ${uahRate.toFixed(1)} UAH`}
+      <div className="finance-command-card xl:col-span-3">
+        <div className="finance-command-toolbar">
+          <div className="finance-rate-pill">
+            {rateLoading ? "Загружаем курс..." : `Курс: 1 USD = ${uahRate.toFixed(1)} UAH`}
+          </div>
+          <div className="finance-currency-toggle">
+            {(["UAH", "USD"] as Currency[]).map((c) => (
+              <button
+                key={c}
+                onClick={() => setCurrency(c)}
+                className={currency === c ? "active" : ""}
+              >
+                {c === "UAH" ? "₴ Гривны" : "$ Доллары"}
+              </button>
+            ))}
+          </div>
+          <div className="finance-action-buttons">
+            <button className="primary-btn" onClick={() => setAddMode("expense")}><Plus size={17} />Расход</button>
+            <button className="primary-btn finance-income-btn" onClick={() => setAddMode("income")}><Plus size={17} />Доход</button>
+          </div>
         </div>
-        <div className="flex rounded-full border border-[var(--border)] bg-[var(--glass-thin)] p-1">
-          {(["UAH", "USD"] as Currency[]).map((c) => (
-            <button key={c} onClick={() => setCurrency(c)}
-              style={{ color: currency === c ? "" : "var(--ink2)" }}
-              className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${currency === c ? "bg-accent text-white shadow-soft" : ""}`}>
-              {c === "UAH" ? "₴ Гривны" : "$ Доллары"}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <button className="primary-btn" onClick={() => setAddMode("expense")}><Plus size={16} />Расход</button>
-          <button className="primary-btn" style={{ background: "linear-gradient(135deg,#0ea5e9,#0284c7)" }} onClick={() => setAddMode("income")}><Plus size={16} />Доход</button>
-        </div>
+        <PremiumFinanceChart txs={data.transactions} fmtC={fmtC} />
       </div>
-
-      {/* ── Premium charts ── */}
-      <PremiumFinanceChart txs={data.transactions} fmtC={fmtC} />
 
       {/* ── Category donut ── */}
       <Card>
@@ -1209,46 +1181,72 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
   const pGoal = Number(data.settings.proteinGoal) || 150;
   const fGoal = Number(data.settings.fatGoal) || 70;
   const cGoal = Number(data.settings.carbsGoal) || 250;
+  const calGoal = Number(data.settings.caloriesGoal) || 2200;
   const getPct = (val: number, goal: number) => goal > 0 ? Math.round((val / goal) * 100) : 0;
+  const clampPct = (val: number, goal: number) => Math.min(getPct(val, goal), 100);
+  const calPct = clampPct(m.calories, calGoal);
+  const calLeft = Math.max(calGoal - m.calories, 0);
+  const dayRows = [
+    ["Калории", m.calories, calGoal, "ккал", "orange"],
+    ["Белки", m.macros.protein, pGoal, "г", "green"],
+    ["Жиры", m.macros.fat, fGoal, "г", "blue"],
+    ["Углеводы", m.macros.carbs, cGoal, "г", "red"],
+  ] as const;
+  const macroCards = [
+    ["Белки сегодня", m.macros.protein, pGoal, "г", "green"],
+    ["Жиры сегодня", m.macros.fat, fGoal, "г", "blue"],
+    ["Углеводы сегодня", m.macros.carbs, cGoal, "г", "red"],
+  ] as const;
 
   return (
     <PageGrid>
-      <Kpi
-        title="Калории сегодня"
-        value={`${m.calories} / ${data.settings.caloriesGoal || "—"} ккал`}
-        sub={`осталось ${Math.max((Number(data.settings.caloriesGoal) || 2200) - m.calories, 0)} ккал · ${getPct(m.calories, Number(data.settings.caloriesGoal) || 2200)}%`}
-        icon={Utensils}
-      />
-      <Kpi
-        title="Белки сегодня"
-        value={`${m.macros.protein} / ${data.settings.proteinGoal || "—"} г`}
-        sub={`осталось ${Math.max(pGoal - m.macros.protein, 0)} г · ${getPct(m.macros.protein, pGoal)}%`}
-        icon={Activity}
-        tone="green"
-      />
-      <Kpi
-        title="Жиры сегодня"
-        value={`${m.macros.fat} / ${data.settings.fatGoal || "—"} г`}
-        sub={`осталось ${Math.max(fGoal - m.macros.fat, 0)} г · ${getPct(m.macros.fat, fGoal)}%`}
-        icon={Activity}
-        tone="blue"
-      />
-      <Kpi
-        title="Углеводы сегодня"
-        value={`${m.macros.carbs} / ${data.settings.carbsGoal || "—"} г`}
-        sub={`осталось ${Math.max(cGoal - m.macros.carbs, 0)} г · ${getPct(m.macros.carbs, cGoal)}%`}
-        icon={Activity}
-        tone="red"
-      />
+      <div className="nutrition-command-card xl:col-span-3">
+        <div className="nutrition-hero">
+          <div className="nutrition-calorie-panel">
+            <div>
+              <div className="nutrition-title-row">
+                <div className="nutrition-icon orange"><Utensils size={25} /></div>
+                <span>Калории сегодня</span>
+              </div>
+              <div className="nutrition-calories-value">{m.calories} / {calGoal} ккал</div>
+              <Progress value={calPct} />
+              <p>осталось {calLeft} ккал · {getPct(m.calories, calGoal)}%</p>
+            </div>
+            <div className="nutrition-ring" style={{ ["--pct" as any]: `${calPct * 3.6}deg` }}>
+              <strong>{getPct(m.calories, calGoal)}<span>%</span></strong>
+              <small>от цели</small>
+            </div>
+          </div>
 
-      {/* Action buttons */}
-      <div className="xl:col-span-3 flex gap-3">
-        <button className="primary-btn" onClick={() => setAddMeal(true)}><Plus size={16} />Добавить приём пищи</button>
-        <button className="primary-btn" style={{ background: "linear-gradient(135deg,#3B82F6,#2563EB)" }} onClick={() => setAddFood(true)}><Plus size={16} />Добавить продукт в базу</button>
+          <div className="nutrition-macro-stack">
+            {macroCards.map(([label, value, goal, unit, tone]) => {
+              const pct = clampPct(value, goal);
+              const left = Math.max(goal - value, 0);
+              return (
+                <div className={`nutrition-macro-card ${tone}`} key={label}>
+                  <div className={`nutrition-icon ${tone}`}><Activity size={24} /></div>
+                  <div className="nutrition-macro-main">
+                    <div className="nutrition-macro-head">
+                      <span>{label}</span>
+                      <strong>{getPct(value, goal)}%</strong>
+                    </div>
+                    <div className="nutrition-macro-value">{value} / {goal} {unit}</div>
+                    <Progress value={pct} color={tone === "green" ? "bg-emerald-400" : tone === "blue" ? "bg-blue-400" : "bg-red-400"} />
+                    <small>осталось {left} {unit}</small>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="nutrition-actions">
+          <button className="primary-btn" onClick={() => setAddMeal(true)}><Plus size={16} />Добавить приём пищи</button>
+          <button className="primary-btn nutrition-food-btn" onClick={() => setAddFood(true)}><Plus size={16} />Добавить продукт в базу</button>
+        </div>
       </div>
 
-      {/* Daily progress */}
-      <Card>
+      <Card className="nutrition-progress-card">
         <SectionTitle
           title="Прогресс дня"
           sub={
@@ -1261,38 +1259,21 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
           }
         />
         <div className="space-y-4">
-          <div className="space-y-1">
-            <div className="flex justify-between text-sm">
-              <span className="font-semibold text-sm">Калории</span>
-              <span className="font-bold text-accent">{getPct(m.calories, Number(data.settings.caloriesGoal) || 2200)}%</span>
-            </div>
-            <Progress value={getPct(m.calories, Number(data.settings.caloriesGoal) || 2200)} />
-            <div className="flex justify-between text-xs text-slate-500 font-medium">
-              <span>Съедено: {m.calories} ккал</span>
-              <span>Цель: {data.settings.caloriesGoal || "—"} ккал</span>
-              <span>Осталось: {Math.max((Number(data.settings.caloriesGoal) || 2200) - m.calories, 0)} ккал</span>
-            </div>
-          </div>
-          {[
-            ["Белки", m.macros.protein, pGoal, "bg-emerald-400"],
-            ["Жиры", m.macros.fat, fGoal, "bg-blue-400"],
-            ["Углеводы", m.macros.carbs, cGoal, "bg-orange-400"]
-          ].map(([label, val, goal, color]) => {
-            const valNum = val as number;
-            const goalNum = goal as number;
-            const pct = getPct(valNum, goalNum);
-            const remaining = Math.max(goalNum - valNum, 0);
+          {dayRows.map(([label, val, goal, unit, tone]) => {
+            const pct = getPct(val, goal);
+            const remaining = Math.max(goal - val, 0);
+            const color = tone === "green" ? "bg-emerald-400" : tone === "blue" ? "bg-blue-400" : tone === "red" ? "bg-red-400" : undefined;
             return (
-              <div key={label as string} className="space-y-1 pt-1">
+              <div key={label} className="space-y-1 pt-1">
                 <div className="flex justify-between text-sm">
-                  <span className="font-semibold text-sm">{label as string}</span>
-                  <span className="font-bold text-slate-700 dark:text-slate-200">{pct}%</span>
+                  <span className="font-semibold text-sm">{label}</span>
+                  <span className="font-bold text-accent">{pct}%</span>
                 </div>
-                <Progress value={pct} color={color as string} />
+                <Progress value={Math.min(pct, 100)} color={color} />
                 <div className="flex justify-between text-xs text-slate-500 font-medium">
-                  <span>Съедено: {valNum} г</span>
-                  <span>Цель: {goalNum} г</span>
-                  <span>Осталось: {remaining} г</span>
+                  <span>Съедено: {val} {unit}</span>
+                  <span>Цель: {goal} {unit}</span>
+                  <span>Осталось: {remaining} {unit}</span>
                 </div>
               </div>
             );
@@ -1300,16 +1281,16 @@ function Nutrition({ data, add, setData }: { data: AppData; add: any; setData: R
         </div>
       </Card>
 
-      <Card className="xl:col-span-2">
+      <Card className="nutrition-week-card xl:col-span-2">
         <SectionTitle title="Калории за 7 дней" />
         <ChartWrap>
-          <BarChart data={chart}>
+          <LineChart data={chart}>
             <CartesianGrid vertical={false} stroke="var(--grid-line)" />
             <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
-            <YAxis hide />
+            <YAxis tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
             <Tooltip />
-            <Bar dataKey="calories" fill="var(--accent)" radius={[8, 8, 0, 0]} />
-          </BarChart>
+            <Line type="monotone" dataKey="calories" stroke="var(--accent)" strokeWidth={3} dot={false} />
+          </LineChart>
         </ChartWrap>
       </Card>
 
@@ -1450,10 +1431,8 @@ const BODY_FIELDS: { key: keyof BodyLog; label: string; unit: string; color: str
 ];
 
 function Health({ data, add, setData }: { data: AppData; add: any; setData: React.Dispatch<React.SetStateAction<AppData>> }) {
-  const latest = getMetrics(data).latestHealth;
   const latestBody = [...(data.bodyLogs ?? [])].sort((a, b) => b.date.localeCompare(a.date))[0];
   const [addBody, setAddBody] = useState(false);
-  const [addHealth, setAddHealth] = useState(false);
   const weightChart = (data.bodyLogs ?? []).slice(-14).map((b) => ({ date: b.date.slice(5), weight: b.weight, fat: b.fatPct, muscle: b.musclePct }));
 
   const todayStr = iso(0);
@@ -1466,10 +1445,6 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
 
   return (
     <PageGrid>
-      <Kpi title="Сон" value={`${latest?.sleep ?? 0} ч`} sub="последняя ночь" icon={Moon} tone="blue" />
-      <Kpi title="Вода" value={`${latest?.water ?? 0} L`} sub="сегодня" icon={Activity} />
-      <Kpi title="Вес" value={latestBody ? `${latestBody.weight} кг` : "—"} sub="последнее взвешивание" icon={Activity} tone="green" />
-
       {/* Body metrics grid */}
       <Card className="xl:col-span-3">
         <div className="mb-4 flex items-center justify-between">
@@ -1480,15 +1455,14 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
             </p>
           </div>
           <div className="flex gap-2">
-            {hasTodayBody && (
-              <button
-                onClick={handleResetToday}
-                className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-900/50 px-3 py-2 text-sm font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
-                title="Удалить сегодняшнее взвешивание"
-              >
-                <Trash2 size={15} />Сбросить сегодня
-              </button>
-            )}
+            <button
+              onClick={handleResetToday}
+              disabled={!hasTodayBody}
+              className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-900/50 px-3 py-2 text-sm font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              title={hasTodayBody ? "Удалить сегодняшнее взвешивание" : "Сегодня нет данных для сброса"}
+            >
+              <Trash2 size={15} />Сбросить сегодня
+            </button>
             <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер</button>
           </div>
         </div>
@@ -1534,12 +1508,6 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
         </>
       )}
 
-      {/* Buttons */}
-      <div className="xl:col-span-3 flex gap-3">
-        <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер тела</button>
-        <button className="primary-btn" style={{ background: "linear-gradient(135deg,#0EA5E9,#0284C7)" }} onClick={() => setAddHealth(true)}><Plus size={16} />Сон / Вода</button>
-      </div>
-
       {/* Body logs history */}
       <Card className="xl:col-span-3">
         <SectionTitle title="История замеров" />
@@ -1566,11 +1534,6 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
       {addBody && (
         <Modal title="Добавить замер тела" close={() => setAddBody(false)}>
           <BodyLogForm setData={setData} after={() => setAddBody(false)} />
-        </Modal>
-      )}
-      {addHealth && (
-        <Modal title="Сон / Вода" close={() => setAddHealth(false)}>
-          <HealthForm add={add} after={() => setAddHealth(false)} />
         </Modal>
       )}
     </PageGrid>
