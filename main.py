@@ -2015,6 +2015,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw = await gpt_vision(image_bytes,
             "На изображении скриншот умных весов (приложение для взвешивания). Извлеки ВСЕ показатели какие видишь. "
             "Соответствие полей:\n"
+            "• date — дата замера видимая на скрине в формате YYYY-MM-DD (например 2026-06-10). Если даты нет — null.\n"
             "• weight — Вес (кг)\n"
             "• bmi — ИМТ\n"
             "• fat_percent — Коэффициент жира в теле (%)\n"
@@ -2030,19 +2031,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• muscle_mass — Вес мышечной массы (кг)\n"
             "• protein_kg — Уровень протеина (кг)\n"
             "Если показателя нет на скрине — ставь null. Верни ТОЛЬКО JSON: "
-            "{\"weight\":null,\"bmi\":null,\"fat_percent\":null,\"muscle_percent\":null,"
+            "{\"date\":null,\"weight\":null,\"bmi\":null,\"fat_percent\":null,\"muscle_percent\":null,"
             "\"water_percent\":null,\"bone_mass\":null,\"bmr\":null,\"protein_percent\":null,"
             "\"body_age\":null,\"visceral_fat\":null,\"fat_mass\":null,\"lean_mass\":null,"
             "\"muscle_mass\":null,\"protein_kg\":null}"
         )
         d = parse_json(raw)
         if d.get("weight"):
-            # Сохраняем СРАЗУ, без подтверждения (утренняя рутина)
-            d["date"] = today_str()
+            # Определяем дату: скрин > caption > сегодня
+            caption = (update.message.caption or "").strip()
+            import re as _re
+            caption_date = None
+            if caption:
+                m = _re.search(r'(\d{4}-\d{2}-\d{2})', caption)
+                if m:
+                    caption_date = m.group(1)
+                else:
+                    # формат ДД.ММ.ГГГГ или ДД/ММ/ГГГГ
+                    m2 = _re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', caption)
+                    if m2:
+                        caption_date = f"{m2.group(3)}-{m2.group(2).zfill(2)}-{m2.group(1).zfill(2)}"
+            d["date"] = d.get("date") or caption_date or today_str()
             supabase.table("body_measurements").upsert(d, on_conflict="date").execute()
             clear_weigh_pending("done")
             # Краткий отчёт что записали
-            lines = ["✅ *Взвешивание записано!*\n"]
+            lines = [f"✅ *Взвешивание записано!* ({d['date']})\n"]
             if d.get("weight"):          lines.append(f"Вес: {d['weight']} кг")
             if d.get("bmi"):             lines.append(f"ИМТ: {d['bmi']}")
             if d.get("fat_percent"):     lines.append(f"Жир: {d['fat_percent']}%")
