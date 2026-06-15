@@ -1540,10 +1540,6 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
 
   return (
     <PageGrid>
-      <Kpi title="Сон" value={`${latest?.sleep ?? 0} ч`} sub="последняя ночь" icon={Moon} tone="blue" />
-      <Kpi title="Вода" value={`${latest?.water ?? 0} L`} sub="сегодня" icon={Activity} />
-      <Kpi title="Вес" value={latestBody ? `${latestBody.weight} кг` : "—"} sub="последнее взвешивание" icon={Activity} tone="green" />
-
       {/* Состав тела */}
       <Card className="xl:col-span-3">
         <div className="mb-4 flex items-center justify-between flex-wrap gap-2">
