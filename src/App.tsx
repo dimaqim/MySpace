@@ -22,6 +22,8 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDollarSign,
   Dumbbell,
   Flame,
@@ -1430,37 +1432,133 @@ const BODY_FIELDS: { key: keyof BodyLog; label: string; unit: string; color: str
   { key: "proteinKg",  label: "Протеин",       unit: "кг",   color: "#A78BFA" },
 ];
 
+const HEALTH_METRICS: { key: keyof BodyLog; tab: string; label: string; unit: string; color: string }[] = [
+  { key: "weight",     tab: "Вес",        label: "Вес (кг)",        unit: " кг",   color: "#3B82F6" },
+  { key: "bmi",        tab: "ИМТ",        label: "ИМТ",             unit: "",      color: "#8B5CF6" },
+  { key: "fatPct",     tab: "Жир %",      label: "Жир (%)",         unit: "%",     color: "#EF4444" },
+  { key: "musclePct",  tab: "Мышцы %",    label: "Мышцы (%)",       unit: "%",     color: "#22A06B" },
+  { key: "waterPct",   tab: "Вода",       label: "Вода (%)",        unit: "%",     color: "#0EA5E9" },
+  { key: "metabolism", tab: "Метаболизм", label: "Метаболизм (ккал)", unit: " ккал", color: "#F47C20" },
+];
+
+const RU_MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+const RU_WEEKDAYS = ["ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"];
+
+function MetricChart({ rows, mkey, label, unit, color, active }: { rows: BodyLog[]; mkey: keyof BodyLog; label: string; unit: string; color: string; active: string | null }) {
+  const chartData = rows.map((b) => ({ date: b.date.slice(5), full: b.date, value: Number(b[mkey]) || 0 }));
+  const activeShort = active ? active.slice(5) : null;
+  return (
+    <Card>
+      <SectionTitle title={label} />
+      {chartData.length === 0 ? (
+        <div className="py-10 text-center text-sm text-slate-400">Нет данных за период</div>
+      ) : (
+        <ChartWrap small>
+          <LineChart data={chartData}>
+            <CartesianGrid vertical={false} stroke="var(--grid-line)" />
+            <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
+            <YAxis hide domain={["auto", "auto"]} />
+            <Tooltip formatter={(v: any) => [`${v}${unit}`, label]} />
+            <Line dataKey="value" stroke={color} strokeWidth={3}
+              dot={(props: any) => {
+                const isActive = props.payload.date === activeShort;
+                return <circle key={props.payload.full} cx={props.cx} cy={props.cy} r={isActive ? 6 : 3}
+                  fill={isActive ? color : "var(--card-bg-solid)"} stroke={color} strokeWidth={2} />;
+              }} />
+          </LineChart>
+        </ChartWrap>
+      )}
+    </Card>
+  );
+}
+
 function Health({ data, add, setData }: { data: AppData; add: any; setData: React.Dispatch<React.SetStateAction<AppData>> }) {
-  const latestBody = [...(data.bodyLogs ?? [])].sort((a, b) => b.date.localeCompare(a.date))[0];
+  const latest = getMetrics(data).latestHealth;
+  const logs = [...(data.bodyLogs ?? [])].sort((a, b) => a.date.localeCompare(b.date)); // ascending
+  const logsDesc = [...logs].reverse();
+  const latestBody = logsDesc[0] ?? null;
+  const datesWithData = new Set(logs.map((b) => b.date));
+
   const [addBody, setAddBody] = useState(false);
-  const weightChart = (data.bodyLogs ?? []).slice(-14).map((b) => ({ date: b.date.slice(5), weight: b.weight, fat: b.fatPct, muscle: b.musclePct }));
+  const [metric, setMetric] = useState<"all" | keyof BodyLog>("all");
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [calMonth, setCalMonth] = useState(() => new Date());
+  const [rangeFrom, setRangeFrom] = useState<string>(logs[0]?.date ?? iso(-30));
+  const [rangeTo, setRangeTo] = useState<string>(iso(0));
+
+  const activeDate = selectedDate ?? latestBody?.date ?? null;
+  const selectedLog = activeDate ? logs.find((b) => b.date === activeDate) ?? null : null;
+  const noDataForSelected = !!activeDate && !selectedLog;
+
+  const inRange = logs.filter((b) => b.date >= rangeFrom && b.date <= rangeTo);
 
   const todayStr = iso(0);
-  const hasTodayBody = (data.bodyLogs ?? []).some((b) => b.date === todayStr);
+  const hasTodayBody = datesWithData.has(todayStr);
   const handleResetToday = () => {
     if (!window.confirm("Сбросить сегодняшнее взвешивание? Данные удалятся и из Supabase.")) return;
     setData((p) => ({ ...p, bodyLogs: (p.bodyLogs ?? []).filter((b) => b.date !== todayStr) }));
+    if (selectedDate === todayStr) setSelectedDate(null);
     deleteBodyMeasurementForDate(todayStr);
+  };
+  const handleDeleteRow = (date: string) => {
+    if (!window.confirm(`Удалить замер за ${date}? Удалится и из Supabase.`)) return;
+    setData((p) => ({ ...p, bodyLogs: (p.bodyLogs ?? []).filter((b) => b.date !== date) }));
+    if (selectedDate === date) setSelectedDate(null);
+    deleteBodyMeasurementForDate(date);
+  };
+
+  // Календарь
+  const calY = calMonth.getFullYear();
+  const calM = calMonth.getMonth();
+  const firstDay = new Date(calY, calM, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7; // Пн=0
+  const daysInMonth = new Date(calY, calM + 1, 0).getDate();
+  const calCells: (string | null)[] = [];
+  for (let i = 0; i < startOffset; i++) calCells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    calCells.push(`${calY}-${String(calM + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+  }
+
+  // Недавние даты
+  const recentList: { label: string; date: string }[] = [
+    { label: "Сегодня", date: iso(0) },
+    { label: "Вчера", date: iso(-1) },
+  ];
+  for (const b of logsDesc) {
+    if (recentList.length >= 5) break;
+    if (!recentList.some((r) => r.date === b.date)) {
+      const dt = new Date(b.date);
+      recentList.push({ label: dt.toLocaleDateString("ru-RU", { day: "numeric", month: "long" }), date: b.date });
+    }
+  }
+
+  const pick = (date: string) => {
+    setSelectedDate(date);
+    const dt = new Date(date);
+    setCalMonth(new Date(dt.getFullYear(), dt.getMonth(), 1));
   };
 
   return (
     <PageGrid>
-      {/* Body metrics grid */}
+      <Kpi title="Сон" value={`${latest?.sleep ?? 0} ч`} sub="последняя ночь" icon={Moon} tone="blue" />
+      <Kpi title="Вода" value={`${latest?.water ?? 0} L`} sub="сегодня" icon={Activity} />
+      <Kpi title="Вес" value={latestBody ? `${latestBody.weight} кг` : "—"} sub="последнее взвешивание" icon={Activity} tone="green" />
+
+      {/* Состав тела */}
       <Card className="xl:col-span-3">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between flex-wrap gap-2">
           <div>
             <h2 className="text-base font-semibold">Состав тела</h2>
             <p className="text-sm text-slate-500">
-              {latestBody ? `Последнее взвешивание: ${latestBody.date}` : "Нет данных — пришли скриншот весов в бот"}
+              {noDataForSelected ? `За ${activeDate} замеров нет` :
+               selectedLog ? `Замер за: ${selectedLog.date}` :
+               "Нет данных — пришли скриншот весов в бот"}
             </p>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={handleResetToday}
-              disabled={!hasTodayBody}
+            <button onClick={handleResetToday} disabled={!hasTodayBody}
               className="flex items-center gap-1.5 rounded-xl border border-rose-300 dark:border-rose-900/50 px-3 py-2 text-sm font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition disabled:opacity-40 disabled:cursor-not-allowed"
-              title={hasTodayBody ? "Удалить сегодняшнее взвешивание" : "Сегодня нет данных для сброса"}
-            >
+              title={hasTodayBody ? "Удалить сегодняшнее взвешивание" : "Сегодня нет данных"}>
               <Trash2 size={15} />Сбросить сегодня
             </button>
             <button className="primary-btn" onClick={() => setAddBody(true)}><Plus size={16} />Добавить замер</button>
@@ -1471,64 +1569,127 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
             <div key={key} style={{ borderLeft: `3px solid ${color}` }}
               className="rounded-xl border border-[var(--border)] bg-[var(--glass-thin)] px-3 py-3 shadow-line">
               <div className="text-[11px] font-bold uppercase tracking-wide text-[var(--ink2)]">{label}</div>
-              <div className="mt-1 text-xl font-bold" style={{ color }}>{latestBody ? latestBody[key] : 0}{unit}</div>
+              <div className="mt-1 text-xl font-bold" style={{ color }}>{selectedLog ? selectedLog[key] : 0}{unit}</div>
             </div>
           ))}
         </div>
       </Card>
 
-      {/* Charts */}
-      {weightChart.length > 0 && (
-        <>
-          <Card className="xl:col-span-2">
-            <SectionTitle title="Вес (кг)" />
-            <ChartWrap small>
-              <LineChart data={weightChart}>
-                <CartesianGrid vertical={false} stroke="var(--grid-line)" />
-                <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
-                <YAxis hide domain={["auto", "auto"]} />
-                <Tooltip />
-                <Line dataKey="weight" stroke="var(--accent)" strokeWidth={3} dot={{ r: 4, fill: "var(--accent)" }} />
-              </LineChart>
-            </ChartWrap>
-          </Card>
-          <Card>
-            <SectionTitle title="Жир % vs Мышцы %" />
-            <ChartWrap small>
-              <LineChart data={weightChart}>
-                <CartesianGrid vertical={false} stroke="var(--grid-line)" />
-                <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "var(--ink2)", fontSize: 11 }} />
-                <YAxis hide />
-                <Tooltip />
-                <Line dataKey="fat" stroke="#EF4444" strokeWidth={2} dot={false} />
-                <Line dataKey="muscle" stroke="#22A06B" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ChartWrap>
-          </Card>
-        </>
-      )}
+      {/* Аналитика + правый блок */}
+      <div className="xl:col-span-3 grid gap-5 lg:grid-cols-[1fr_300px]">
+        {/* Аналитика */}
+        <Card>
+          <div className="mb-4 flex items-center justify-between flex-wrap gap-3">
+            <h2 className="text-base font-semibold">Аналитика замеров</h2>
+            <div className="flex items-center gap-2 text-xs">
+              <input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} className="rounded-lg" />
+              <span className="text-slate-400">—</span>
+              <input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} className="rounded-lg" />
+            </div>
+          </div>
+          <div className="mb-4 flex flex-wrap gap-1.5">
+            {([["all", "Все"], ...HEALTH_METRICS.map((m) => [m.key, m.tab])] as [string, string][]).map(([key, label]) => (
+              <button key={key} onClick={() => setMetric(key as any)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${metric === key ? "bg-accent text-white" : "bg-[var(--glass-thin)] text-[var(--ink2)] hover:bg-[var(--glass)]"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {inRange.length === 0 ? (
+            <div className="py-12 text-center text-sm text-slate-400">За выбранный период нет данных</div>
+          ) : metric === "all" ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {HEALTH_METRICS.filter((m) => ["weight", "fatPct", "waterPct", "metabolism"].includes(m.key as string)).map((m) => (
+                <MetricChart key={m.key} rows={inRange} mkey={m.key} label={m.label} unit={m.unit} color={m.color} active={activeDate} />
+              ))}
+            </div>
+          ) : (
+            (() => { const m = HEALTH_METRICS.find((x) => x.key === metric)!;
+              return <MetricChart rows={inRange} mkey={m.key} label={m.label} unit={m.unit} color={m.color} active={activeDate} />; })()
+          )}
+        </Card>
 
-      {/* Body logs history */}
+        {/* Календарь + недавние даты */}
+        <div className="space-y-5">
+          <Card>
+            <div className="mb-3 flex items-center justify-between">
+              <button className="icon-btn" onClick={() => setCalMonth(new Date(calY, calM - 1, 1))}><ChevronLeft size={16} /></button>
+              <span className="text-sm font-semibold">{RU_MONTHS[calM]} {calY}</span>
+              <button className="icon-btn" onClick={() => setCalMonth(new Date(calY, calM + 1, 1))}><ChevronRight size={16} /></button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-slate-400 mb-1">
+              {RU_WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {calCells.map((date, i) => {
+                if (!date) return <div key={i} />;
+                const day = Number(date.slice(8));
+                const has = datesWithData.has(date);
+                const isActive = date === activeDate;
+                const isToday = date === todayStr;
+                return (
+                  <button key={i} onClick={() => pick(date)}
+                    className={`relative grid h-8 place-items-center rounded-lg text-xs font-semibold transition
+                      ${isActive ? "bg-accent text-white" : has ? "bg-orange-50 dark:bg-orange-950/30 text-accent hover:bg-orange-100" : "text-[var(--ink2)] hover:bg-[var(--glass-thin)]"}
+                      ${isToday && !isActive ? "ring-1 ring-accent" : ""}`}>
+                    {day}
+                    {has && !isActive && <span className="absolute bottom-1 h-1 w-1 rounded-full bg-accent" />}
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+
+          <Card>
+            <h3 className="mb-2 text-sm font-semibold">Недавние даты</h3>
+            <div className="space-y-1">
+              {recentList.map((r) => {
+                const has = datesWithData.has(r.date);
+                const isActive = r.date === activeDate;
+                return (
+                  <button key={r.date} onClick={() => pick(r.date)}
+                    className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition ${isActive ? "bg-accent/10 text-accent font-semibold" : "hover:bg-[var(--glass-thin)]"}`}>
+                    <span className={isActive ? "text-accent" : has ? "" : "text-slate-400"}>{r.label}</span>
+                    <span className="text-xs text-slate-400">{r.date}{!has && " · нет"}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      {/* История замеров */}
       <Card className="xl:col-span-3">
         <SectionTitle title="История замеров" />
-        <div className="overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Дата</th>
-                {BODY_FIELDS.slice(0, 8).map((f) => <th key={f.key}>{f.label}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {[...(data.bodyLogs ?? [])].sort((a, b) => b.date.localeCompare(a.date)).map((b) => (
-                <tr key={b.id}>
-                  <td>{b.date}</td>
-                  {BODY_FIELDS.slice(0, 8).map((f) => <td key={f.key}>{b[f.key]}{f.unit}</td>)}
+        {logs.length === 0 ? (
+          <div className="py-8 text-center text-sm text-slate-400">Записей нет — пришли скриншот весов в бот</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  {BODY_FIELDS.slice(0, 7).map((f) => <th key={f.key}>{f.label}</th>)}
+                  <th>Действия</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {logsDesc.map((b) => (
+                  <tr key={b.id} onClick={() => pick(b.date)}
+                    className={`cursor-pointer transition ${b.date === activeDate ? "bg-accent/10" : "hover:bg-[var(--glass-thin)]"}`}>
+                    <td className="font-medium">{b.date}</td>
+                    {BODY_FIELDS.slice(0, 7).map((f) => <td key={f.key}>{b[f.key]}{f.unit}</td>)}
+                    <td>
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteRow(b.date); }}
+                        className="rounded-lg px-2 py-1 text-xs text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30" title="Удалить">🗑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
       {addBody && (
@@ -1539,6 +1700,7 @@ function Health({ data, add, setData }: { data: AppData; add: any; setData: Reac
     </PageGrid>
   );
 }
+
 
 function Workouts({ data, add }: { data: AppData; add: any }) {
   const weekly = chart7(data.workouts, (xs) => ({ calories: xs.reduce((s, x) => s + x.calories, 0), duration: xs.reduce((s, x) => s + x.duration, 0), steps: xs.reduce((s, x) => s + x.steps, 0) / 1000 }));
