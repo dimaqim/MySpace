@@ -9,9 +9,13 @@ import {
   updateProductInSupabase,
   updateMealInSupabase,
   updateDailyGoalsInSupabase,
+  addTransactionToSupabase,
+  updateTransactionInSupabase,
+  deleteTransactionFromSupabase,
   sbProductToFood,
   sbFoodLogToMeal,
   sbBodyToBodyLog,
+  sbFinanceToTx,
   useSupabaseRealtime,
 } from "./lib/supabaseSync";
 import {
@@ -318,19 +322,17 @@ function App() {
 
   // ── Supabase sync ──────────────────────────────────────────────
   useEffect(() => {
-    fetchAll().then(({ products, foodLog, bodyMeasurements, dailyGoals }) => {
+    fetchAll().then(({ products, foodLog, bodyMeasurements, dailyGoals, finances }) => {
       setData((prev) => {
-        // Цель калорий: ручная (daily_goals) > обмен веществ с последнего взвешивания (bmr) > прежняя
         const latestBmr = bodyMeasurements.find((b: any) => b.bmr)?.bmr;
         const calGoal = dailyGoals?.calories ?? latestBmr ?? prev.settings.caloriesGoal;
-        // БЖУ: ручные > расчёт от калорий (Б 30% / Ж 25% / У 45%)
         const derived = deriveMacroGoals(Number(calGoal) || 0);
         return {
           ...prev,
           foods: products.length > 0 ? products.map(sbProductToFood) : prev.foods,
           meals: foodLog.length > 0 ? foodLog.map(sbFoodLogToMeal) : prev.meals,
-          // Замеры тела: Supabase — источник правды (пусто в базе = пусто на сайте)
           bodyLogs: bodyMeasurements.map(sbBodyToBodyLog),
+          transactions: finances.length > 0 ? finances.map(sbFinanceToTx) : prev.transactions,
           settings: {
             ...prev.settings,
             caloriesGoal: calGoal,
@@ -376,6 +378,21 @@ function App() {
           fatGoal: row.fat ?? prev.settings.fatGoal,
           carbsGoal: row.carbs ?? prev.settings.carbsGoal,
         },
+      }));
+    } else if (table === 'finances') {
+      setData((prev) => {
+        if (prev.transactions.some((t) => t.id === row.id)) return prev;
+        return { ...prev, transactions: [sbFinanceToTx(row), ...prev.transactions] };
+      });
+    } else if (table === 'finances_update') {
+      setData((prev) => ({
+        ...prev,
+        transactions: prev.transactions.map((t) => t.id === row.id ? sbFinanceToTx(row) : t),
+      }));
+    } else if (table === 'finances_delete') {
+      setData((prev) => ({
+        ...prev,
+        transactions: prev.transactions.filter((t) => t.id !== row.id),
       }));
     }
   }, []);
@@ -1017,11 +1034,14 @@ function PremiumFinanceChart({ txs, fmtC }: {
 
 function Finance({ data, add, setData }: { data: AppData; add: any; setData: React.Dispatch<React.SetStateAction<AppData>> }) {
   const [currency, setCurrency] = useState<Currency>("UAH");
-  const [uahRate, setUahRate] = useState(41.5); // fallback rate UAH per 1 USD
+  const [uahRate, setUahRate] = useState(41.5);
   const [rateLoading, setRateLoading] = useState(false);
   const [addMode, setAddMode] = useState<"expense" | "income" | null>(null);
-  const [newCat, setNewCat] = useState("");
-  const [showCatEditor, setShowCatEditor] = useState<"expense" | "income" | null>(null);
+  const [newExpCat, setNewExpCat] = useState("");
+  const [newIncCat, setNewIncCat] = useState("");
+  const [expCatOpen, setExpCatOpen] = useState(false);
+  const [incCatOpen, setIncCatOpen] = useState(false);
+  const [txOpen, setTxOpen] = useState(false);
 
   useEffect(() => {
     setRateLoading(true);
@@ -1038,22 +1058,21 @@ function Finance({ data, add, setData }: { data: AppData; add: any; setData: Rea
     maximumFractionDigits: currency === "UAH" ? 0 : 1,
   }).format(conv(uah));
 
-  const expCats = Object.values(
-    data.transactions.filter((t) => t.type === "expense")
-      .reduce<Record<string, { name: string; value: number }>>((a, t) => ({
-        ...a, [t.category]: { name: t.category, value: (a[t.category]?.value ?? 0) + t.amount }
-      }), {})
-  );
-
   const addCat = (type: "expense" | "income") => {
-    if (!newCat.trim()) return;
+    const val = type === "expense" ? newExpCat.trim() : newIncCat.trim();
+    if (!val) return;
     const key = type === "expense" ? "expenseCategories" : "incomeCategories";
-    setData((p) => ({ ...p, [key]: [...p[key], newCat.trim()] }));
-    setNewCat("");
+    setData((p) => ({ ...p, [key]: [...p[key], val] }));
+    if (type === "expense") setNewExpCat(""); else setNewIncCat("");
   };
   const removeCat = (type: "expense" | "income", cat: string) => {
     const key = type === "expense" ? "expenseCategories" : "incomeCategories";
     setData((p) => ({ ...p, [key]: p[key].filter((c) => c !== cat) }));
+  };
+
+  const handleDeleteTx = (txId: string) => {
+    setData((p) => ({ ...p, transactions: p.transactions.filter((t) => t.id !== txId) }));
+    deleteTransactionFromSupabase(txId);
   };
 
   return (
@@ -1065,11 +1084,7 @@ function Finance({ data, add, setData }: { data: AppData; add: any; setData: Rea
           </div>
           <div className="finance-currency-toggle">
             {(["UAH", "USD"] as Currency[]).map((c) => (
-              <button
-                key={c}
-                onClick={() => setCurrency(c)}
-                className={currency === c ? "active" : ""}
-              >
+              <button key={c} onClick={() => setCurrency(c)} className={currency === c ? "active" : ""}>
                 {c === "UAH" ? "₴ Гривны" : "$ Доллары"}
               </button>
             ))}
@@ -1082,76 +1097,90 @@ function Finance({ data, add, setData }: { data: AppData; add: any; setData: Rea
         <PremiumFinanceChart txs={data.transactions} fmtC={fmtC} />
       </div>
 
-      {/* ── Category donut ── */}
+      {/* Категории расходов */}
       <Card>
-        <SectionTitle title="Расходы по категориям" />
-        <ChartWrap>
-          <PieChart>
-            <Pie data={expCats} dataKey="value" nameKey="name" innerRadius={55} outerRadius={92}>
-              {expCats.map((_, i) => <Cell key={i} fill={["#F47C20","#22A06B","#3B82F6","#A855F7","#F59E0B","#EF4444","#06B6D4"][i % 7]} />)}
-            </Pie>
-            <Tooltip formatter={(v: unknown) => fmtC(Number(v))} />
-          </PieChart>
-        </ChartWrap>
+        <button className="w-full flex items-center justify-between gap-2 text-left" onClick={() => setExpCatOpen((v) => !v)}>
+          <span className="text-base font-semibold">Категории расходов</span>
+          <ChevronDown size={18} className={`text-slate-400 transition-transform duration-200 ${expCatOpen ? "rotate-180" : ""}`} />
+        </button>
+        {expCatOpen && (
+          <div className="mt-3">
+            <div className="flex flex-wrap gap-2 mb-3">
+              {data.expenseCategories.map((c) => (
+                <span key={c} className="expense-tag">
+                  {c}
+                  <button onClick={() => removeCat("expense", c)} className="ml-1 opacity-60 hover:opacity-100 hover:text-rose-500">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newExpCat} onChange={(e) => setNewExpCat(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCat("expense")}
+                placeholder="Новая категория" className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent px-3 py-2 text-sm outline-none focus:border-accent" />
+              <button className="primary-btn" onClick={() => addCat("expense")}><Plus size={15} /></button>
+            </div>
+          </div>
+        )}
       </Card>
 
-      {/* Category editors */}
+      {/* Категории доходов */}
       <Card>
-        <SectionTitle title="Категории расходов" sub="редактировать" />
-        <div className="flex flex-wrap gap-2 mb-3">
-          {data.expenseCategories.map((c) => (
-            <span key={c} className="expense-tag">
-              {c}
-              <button onClick={() => removeCat("expense", c)} className="ml-1 opacity-60 hover:opacity-100 hover:text-rose-500">×</button>
-            </span>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <input value={newCat} onChange={(e) => setNewCat(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (addCat("expense"), setShowCatEditor(null))}
-            placeholder="Новая категория" className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-accent" />
-          <button className="primary-btn" onClick={() => addCat("expense")}><Plus size={15} /></button>
-        </div>
+        <button className="w-full flex items-center justify-between gap-2 text-left" onClick={() => setIncCatOpen((v) => !v)}>
+          <span className="text-base font-semibold">Категории доходов</span>
+          <ChevronDown size={18} className={`text-slate-400 transition-transform duration-200 ${incCatOpen ? "rotate-180" : ""}`} />
+        </button>
+        {incCatOpen && (
+          <div className="mt-3">
+            <div className="flex flex-wrap gap-2 mb-3">
+              {data.incomeCategories.map((c) => (
+                <span key={c} className="income-tag">
+                  {c}
+                  <button onClick={() => removeCat("income", c)} className="ml-1 opacity-60 hover:opacity-100 hover:text-rose-500">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newIncCat} onChange={(e) => setNewIncCat(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCat("income")}
+                placeholder="Новая категория" className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-transparent px-3 py-2 text-sm outline-none focus:border-accent" />
+              <button className="primary-btn" style={{ background: "linear-gradient(135deg,#0ea5e9,#0284c7)" }} onClick={() => addCat("income")}><Plus size={15} /></button>
+            </div>
+          </div>
+        )}
       </Card>
 
-      <Card>
-        <SectionTitle title="Категории доходов" sub="редактировать" />
-        <div className="flex flex-wrap gap-2 mb-3">
-          {data.incomeCategories.map((c) => (
-            <span key={c} className="income-tag">
-              {c}
-              <button onClick={() => removeCat("income", c)} className="ml-1 opacity-60 hover:opacity-100 hover:text-rose-500">×</button>
-            </span>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <input value={newCat} onChange={(e) => setNewCat(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCat("income")}
-            placeholder="Новая категория" className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-accent" />
-          <button className="primary-btn" style={{ background: "linear-gradient(135deg,#0ea5e9,#0284c7)" }} onClick={() => addCat("income")}><Plus size={15} /></button>
-        </div>
-      </Card>
-
+      {/* Все транзакции */}
       <Card className="xl:col-span-3">
-        <SectionTitle title="Все транзакции" sub={`${data.transactions.length} записей`} />
-        <TransactionsTable
-          rows={data.transactions}
-          fmtC={fmtC}
-          setData={setData}
-          expenseCategories={data.expenseCategories}
-          incomeCategories={data.incomeCategories}
-        />
+        <button className="w-full flex items-center justify-between gap-2 text-left" onClick={() => setTxOpen((v) => !v)}>
+          <div>
+            <span className="text-base font-semibold">Все транзакции</span>
+            <span className="ml-2 text-sm text-slate-500">{data.transactions.length} записей</span>
+          </div>
+          <ChevronDown size={18} className={`text-slate-400 transition-transform duration-200 ${txOpen ? "rotate-180" : ""}`} />
+        </button>
+        {txOpen && (
+          <div className="mt-4">
+            <TransactionsTable
+              rows={data.transactions}
+              fmtC={fmtC}
+              setData={setData}
+              onDelete={handleDeleteTx}
+              expenseCategories={data.expenseCategories}
+              incomeCategories={data.incomeCategories}
+            />
+          </div>
+        )}
       </Card>
 
-      {/* Modals */}
       {addMode === "expense" && (
         <Modal title="Добавить расход" close={() => setAddMode(null)}>
-          <ExpenseForm add={add} categories={data.expenseCategories} after={() => setAddMode(null)} />
+          <ExpenseForm add={add} categories={data.expenseCategories} setData={setData} after={() => setAddMode(null)} />
         </Modal>
       )}
       {addMode === "income" && (
         <Modal title="Добавить доход" close={() => setAddMode(null)}>
-          <IncomeForm add={add} categories={data.incomeCategories} after={() => setAddMode(null)} />
+          <IncomeForm add={add} categories={data.incomeCategories} setData={setData} after={() => setAddMode(null)} />
         </Modal>
       )}
+
     </PageGrid>
   );
 }
@@ -2761,10 +2790,11 @@ function HabitLine({ habit, setData, grid = false }: { habit: Habit; setData: Re
   return <div><div className="mb-2 flex items-center justify-between gap-3"><button className="flex items-center gap-2 text-sm font-medium" onClick={() => setData((p) => ({ ...p, habits: p.habits.map((h) => h.id === habit.id ? { ...h, doneDates: done ? h.doneDates.filter((d) => d !== iso(0)) : [...h.doneDates, iso(0)], streak: done ? Math.max(0, h.streak - 1) : h.streak + 1 } : h) }))}><span className={`check ${done ? "checked" : ""}`} />{habit.title}</button><span className="text-xs text-slate-400">{habit.streak} streak</span></div>{grid ? <div className="grid grid-cols-7 gap-1">{Array.from({ length: 7 }, (_, i) => iso(i - 6)).map((d) => <span key={d} className={`h-7 rounded-lg ${habit.doneDates.includes(d) ? "bg-accent" : "bg-slate-100"}`} />)}</div> : <Progress value={habit.doneDates.length / habit.target * 100} />}</div>;
 }
 
-function TransactionsTable({ rows, fmtC, setData, expenseCategories, incomeCategories }: {
+function TransactionsTable({ rows, fmtC, setData, onDelete, expenseCategories, incomeCategories }: {
   rows: Transaction[];
   fmtC?: (n: number) => string;
   setData?: React.Dispatch<React.SetStateAction<AppData>>;
+  onDelete?: (id: string) => void;
   expenseCategories?: string[];
   incomeCategories?: string[];
 }) {
@@ -2777,6 +2807,7 @@ function TransactionsTable({ rows, fmtC, setData, expenseCategories, incomeCateg
   });
 
   const handleDelete = (txId: string) => {
+    if (onDelete) { onDelete(txId); return; }
     if (!setData) return;
     setData((p) => ({ ...p, transactions: p.transactions.filter((t) => t.id !== txId) }));
   };
@@ -2864,12 +2895,12 @@ function TransactionEditForm({ tx, categories, setData, close }: {
 
   const save = (e: React.FormEvent) => {
     e.preventDefault();
+    const patch = { title, amount: Number(amount) || 0, category, personName: personName || undefined, date };
     setData((p) => ({
       ...p,
-      transactions: p.transactions.map((t) =>
-        t.id === tx.id ? { ...t, title, amount: Number(amount) || 0, category, personName: personName || undefined, date } : t
-      ),
+      transactions: p.transactions.map((t) => t.id === tx.id ? { ...t, ...patch } : t),
     }));
+    updateTransactionInSupabase(tx.id, patch);
     close();
   };
 
@@ -2919,11 +2950,14 @@ function TransactionEditForm({ tx, categories, setData, close }: {
 
 function nowTime() { const d = new Date(); return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 
-function ExpenseForm({ add, categories, after }: { add: any; categories: string[]; after?: () => void }) {
+function ExpenseForm({ add, categories, setData, after }: { add: any; categories: string[]; setData?: React.Dispatch<React.SetStateAction<AppData>>; after?: () => void }) {
   const [f, bind] = useFormState({ title: "", amount: "" as any, category: categories[0] ?? "Прочее", date: iso(0) });
   return (
-    <Form onSubmit={() => {
-      add("transactions", { id: id(), ...f, amount: Number(f.amount) || 0, time: nowTime(), type: "expense", currency: "UAH" });
+    <Form onSubmit={async () => {
+      const tx = { id: id(), ...f, amount: Number(f.amount) || 0, time: nowTime(), type: "expense" as const, currency: "UAH" as Currency };
+      if (setData) setData((p) => ({ ...p, transactions: [tx, ...p.transactions] }));
+      else add("transactions", tx);
+      addTransactionToSupabase({ type: "expense", amount: tx.amount, category: tx.category, description: tx.title, date: tx.date, currency: "UAH" });
       after?.();
     }}>
       <Input label="На что потратил" {...bind("title")} />
@@ -2940,21 +2974,24 @@ function ExpenseForm({ add, categories, after }: { add: any; categories: string[
   );
 }
 
-function IncomeForm({ add, categories, after }: { add: any; categories: string[]; after?: () => void }) {
+function IncomeForm({ add, categories, setData, after }: { add: any; categories: string[]; setData?: React.Dispatch<React.SetStateAction<AppData>>; after?: () => void }) {
   const [f, bind] = useFormState({ title: "", personName: "", amount: "" as any, category: categories[0] ?? "Фриланс", date: iso(0) });
   return (
-    <Form onSubmit={() => {
-      add("transactions", {
+    <Form onSubmit={async () => {
+      const tx = {
         id: id(),
-        title: f.title || `${f.category} — ${f.personName}`,
+        title: f.title || `${f.category}${f.personName ? ` — ${f.personName}` : ""}`,
         personName: f.personName,
         amount: Number(f.amount) || 0,
         category: f.category,
-        type: "income",
-        currency: "UAH",
+        type: "income" as const,
+        currency: "UAH" as Currency,
         date: f.date,
         time: nowTime(),
-      });
+      };
+      if (setData) setData((p) => ({ ...p, transactions: [tx, ...p.transactions] }));
+      else add("transactions", tx);
+      addTransactionToSupabase({ type: "income", amount: tx.amount, category: tx.category, description: tx.title, date: tx.date, currency: "UAH", storeName: tx.personName || undefined });
       after?.();
     }}>
       <Input label="Имя клиента / плательщика" {...bind("personName")} />

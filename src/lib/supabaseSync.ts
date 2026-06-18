@@ -185,20 +185,73 @@ export async function updateDailyGoalsInSupabase(goals: {
   if (error) console.error('updateGoals error:', error)
 }
 
+// ── Finance helpers ───────────────────────────────────────────────
+
+export function sbFinanceToTx(r: any) {
+  return {
+    id: r.id,
+    date: r.date,
+    time: r.created_at ? r.created_at.slice(11, 16) : '00:00',
+    title: r.description ?? r.category ?? '',
+    category: r.category ?? '',
+    type: r.type as 'income' | 'expense',
+    amount: Number(r.amount) || 0,
+    currency: r.currency ?? 'UAH',
+    personName: r.store_name ?? undefined,
+  }
+}
+
+export async function addTransactionToSupabase(tx: {
+  type: 'income' | 'expense'; amount: number; category: string;
+  description?: string; date: string; currency?: string; storeName?: string;
+}) {
+  const { data, error } = await supabase.from('finances').insert({
+    type: tx.type,
+    amount: tx.amount,
+    category: tx.category,
+    description: tx.description ?? tx.category,
+    date: tx.date,
+    currency: tx.currency ?? 'UAH',
+    store_name: tx.storeName ?? null,
+  }).select().single()
+  if (error) console.error('addTransaction error:', error)
+  return data
+}
+
+export async function updateTransactionInSupabase(id: string, patch: {
+  title?: string; amount?: number; category?: string; date?: string; personName?: string;
+}) {
+  const p: any = {}
+  if (patch.title !== undefined) p.description = patch.title
+  if (patch.amount !== undefined) p.amount = patch.amount
+  if (patch.category !== undefined) p.category = patch.category
+  if (patch.date !== undefined) p.date = patch.date
+  if (patch.personName !== undefined) p.store_name = patch.personName
+  const { error } = await supabase.from('finances').update(p).eq('id', id)
+  if (error) console.error('updateTransaction error:', error)
+}
+
+export async function deleteTransactionFromSupabase(id: string) {
+  const { error } = await supabase.from('finances').delete().eq('id', id)
+  if (error) console.error('deleteTransaction error:', error)
+}
+
 // ── Fetch all ─────────────────────────────────────────────────────
 
 export async function fetchAll() {
-  const [products, foodLog, bodyMeasurements, dailyGoals] = await Promise.all([
+  const [products, foodLog, bodyMeasurements, dailyGoals, finances] = await Promise.all([
     supabase.from('products').select('*').order('created_at', { ascending: false }),
     supabase.from('food_log').select('*').order('date', { ascending: false }).limit(200),
     supabase.from('body_measurements').select('*').order('date', { ascending: false }).limit(90),
     supabase.from('daily_goals').select('*').eq('date', today()).single(),
+    supabase.from('finances').select('*').order('date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
   ])
   return {
     products: products.data ?? [],
     foodLog: foodLog.data ?? [],
     bodyMeasurements: bodyMeasurements.data ?? [],
     dailyGoals: dailyGoals.data ?? null,
+    finances: finances.data ?? [],
   }
 }
 
@@ -220,6 +273,12 @@ export function useSupabaseRealtime(onUpdate: (table: string, row: any) => void)
         (payload) => onUpdate('daily_goals', payload.new))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'daily_goals' },
         (payload) => onUpdate('daily_goals', payload.new))
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'finances' },
+        (payload) => onUpdate('finances', payload.new))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'finances' },
+        (payload) => onUpdate('finances_update', payload.new))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'finances' },
+        (payload) => onUpdate('finances_delete', payload.old))
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
