@@ -2483,11 +2483,11 @@ async def send_monthly_summary(bot: Bot):
             "balance": round(balance, 2),
         }
 
-        prompt = f"""Ты личный ИИ-ассистент. Напиши итог месяца строго в таком формате (Markdown, используй жирный **текст** для заголовков секций):
+        prompt = f"""Ты личный ИИ-ассистент. Напиши итог месяца строго в таком формате. ВАЖНО: заголовки секций оборачивай в одинарные звёздочки *вот так* — это жирный в Telegram Markdown. НЕ используй двойные звёздочки:
 
-📅 **Итог месяца — {month_name}**
+📅 *Итог месяца — {month_name}*
 
-🍽 **Питание**
+🍽 *Питание*
 Данных внесено: {food_days} дней
 
 Итого за внесённые дни:
@@ -2501,7 +2501,7 @@ async def send_monthly_summary(bot: Bot):
 Комментарий:
 [2-3 предложения: объективная оценка питания за месяц, учитывая что данных {food_days} дней]
 
-⚖️ **Вес и состав тела**
+⚖️ *Вес и состав тела*
 Вес: {stats_data['weight_start']} → {stats_data['weight_end']} кг
 Изменение: {f"+{round(stats_data['weight_end']-stats_data['weight_start'],1)}" if stats_data['weight_end'] and stats_data['weight_start'] else "нет данных"} кг
 
@@ -2511,13 +2511,13 @@ async def send_monthly_summary(bot: Bot):
 Комментарий:
 [2-3 предложения: анализ изменений веса и жира, возможные причины]
 
-💪 **Тренировки**
+💪 *Тренировки*
 Тренировок за месяц: {len(works)}
 
 Комментарий:
 [1-2 предложения: оценка тренировочной активности]
 
-💰 **Финансы**
+💰 *Финансы*
 Доходы: {income:,.2f} UAH
 Расходы: {expense:,.2f} UAH
 Баланс: {balance:+,.2f} UAH
@@ -2525,14 +2525,14 @@ async def send_monthly_summary(bot: Bot):
 Комментарий:
 [2 предложения: оценка финансового результата и главный вывод]
 
-📌 **Главные выводы месяца**
+📌 *Главные выводы месяца*
 
 1. [вывод про тренировки]
 2. [вывод про питание]
 3. [вывод про вес]
 4. [вывод про финансы]
 
-🎯 **Фокус на {next_month}**
+🎯 *Фокус на {next_month}*
 
 1. [конкретный совет по питанию]
 2. [конкретный совет по тренировкам]
@@ -2550,13 +2550,13 @@ async def send_monthly_summary(bot: Bot):
             # Fallback без Claude
             w_line = f"{stats_data['weight_start']} → {stats_data['weight_end']} кг" if stats_data['weight_start'] else "нет данных"
             text = (
-                f"📅 **Итог месяца — {month_name}**\n\n"
-                f"🍽 **Питание**\nДанных внесено: {food_days} дней\n"
+                f"📅 *Итог месяца — {month_name}*\n\n"
+                f"🍽 *Питание*\nДанных внесено: {food_days} дней\n"
                 f"Итого: {round(total_cal):,} ккал | Б/Ж/У: {round(total_p)}г / {round(total_f)}г / {round(total_c)}г\n"
                 f"Среднее/день: {avg_cal} ккал | {avg_p}г / {avg_f}г / {avg_c}г\n\n"
-                f"⚖️ **Вес:** {w_line}\n\n"
-                f"💪 **Тренировок:** {len(works)}\n\n"
-                f"💰 **Финансы:** +{income:,.2f} / -{expense:,.2f} UAH (баланс {balance:+,.2f})"
+                f"⚖️ *Вес:* {w_line}\n\n"
+                f"💪 *Тренировок:* {len(works)}\n\n"
+                f"💰 *Финансы:* +{income:,.2f} / -{expense:,.2f} UAH (баланс {balance:+,.2f})"
             )
 
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
