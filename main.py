@@ -2432,11 +2432,17 @@ async def send_monthly_summary(bot: Bot):
     if not chat_id:
         return
     try:
-        now         = now_local()
-        # Текущий месяц
-        month_start = now.replace(day=1).strftime("%Y-%m-%d")
-        month_end   = now.strftime("%Y-%m-%d")
-        month_name  = now.strftime("%B %Y")
+        now = now_local()
+        # Если вызван 1-го числа — отчёт за прошлый месяц, иначе за текущий
+        if now.day == 1:
+            last_day    = now - timedelta(days=1)
+            month_start = last_day.replace(day=1).strftime("%Y-%m-%d")
+            month_end   = last_day.strftime("%Y-%m-%d")
+            month_name  = last_day.strftime("%B %Y")
+        else:
+            month_start = now.replace(day=1).strftime("%Y-%m-%d")
+            month_end   = now.strftime("%Y-%m-%d")
+            month_name  = now.strftime("%B %Y")
 
         food   = supabase.table("food_log").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
         bodies = supabase.table("body_measurements").select("date,weight,fat_percent").gte("date", month_start).order("date").execute().data or []
