@@ -2435,56 +2435,131 @@ async def send_monthly_summary(bot: Bot):
         now         = now_local()
         month_start = now.replace(day=1).strftime("%Y-%m-%d")
         month_end   = now.strftime("%Y-%m-%d")
-        month_name  = now.strftime("%B %Y")
+
+        # Название месяца на русском
+        RU_MONTHS = {1:"январь",2:"февраль",3:"март",4:"апрель",5:"май",6:"июнь",
+                     7:"июль",8:"август",9:"сентябрь",10:"октябрь",11:"ноябрь",12:"декабрь"}
+        month_name = f"{RU_MONTHS[now.month]} {now.year}"
+        next_month = f"{RU_MONTHS[(now.month % 12) + 1]}"
 
         food   = supabase.table("food_log").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
-        bodies = supabase.table("body_measurements").select("date,weight,fat_percent").gte("date", month_start).order("date").execute().data or []
+        bodies = supabase.table("body_measurements").select("date,weight,fat_percent").gte("date", month_start).lte("date", month_end).order("date").execute().data or []
         fin    = supabase.table("finances").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
-        works  = supabase.table("workouts").select("*").gte("date", month_start).execute().data or []
+        works  = supabase.table("workouts").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
 
-        total_cal = sum(r.get("calories") or 0 for r in food)
-        total_p   = sum(r.get("protein")  or 0 for r in food)
-        total_f   = sum(r.get("fat")      or 0 for r in food)
-        total_c   = sum(r.get("carbs")    or 0 for r in food)
-        n_days    = max(len(set(r["date"] for r in food)), 1)
-        income    = sum(r["amount"] for r in fin if r["type"] == "income")
-        expense   = sum(r["amount"] for r in fin if r["type"] == "expense")
-        cur       = fin[0].get("currency", "UAH") if fin else "UAH"
+        # Питание
+        food_days  = len(set(r["date"] for r in food))
+        total_cal  = sum(r.get("calories") or 0 for r in food)
+        total_p    = sum(r.get("protein")  or 0 for r in food)
+        total_f    = sum(r.get("fat")      or 0 for r in food)
+        total_c    = sum(r.get("carbs")    or 0 for r in food)
+        nd         = max(food_days, 1)
+        avg_cal    = round(total_cal / nd)
+        avg_p      = round(total_p / nd)
+        avg_f      = round(total_f / nd)
+        avg_c      = round(total_c / nd)
 
-        lines = [f"📅 *Итог месяца — {month_name}*\n"]
-        lines.append(f"🍽 *Питание* ({n_days} дней):")
-        lines.append(f"   Итого: {round(total_cal)} ккал | Б {round(total_p)}г | Ж {round(total_f)}г | У {round(total_c)}г")
-        lines.append(f"   Среднее/день: {round(total_cal/n_days)} ккал | Б {round(total_p/n_days)}г | Ж {round(total_f/n_days)}г | У {round(total_c/n_days)}г")
+        # Финансы
+        income  = sum(r["amount"] for r in fin if r.get("type") == "income")
+        expense = sum(r["amount"] for r in fin if r.get("type") == "expense")
+        balance = income - expense
 
-        if bodies:
-            w_start = bodies[0]["weight"]
-            w_end   = bodies[-1]["weight"]
-            diff    = round(w_end - w_start, 1)
-            arrow   = "↑" if diff > 0 else "↓" if diff < 0 else "→"
-            f_start = bodies[0].get("fat_percent", "?")
-            f_end   = bodies[-1].get("fat_percent", "?")
-            lines.append(f"⚖️ *Вес:* {w_start} → {w_end} кг ({arrow}{abs(diff)} кг)")
-            lines.append(f"   Жир: {f_start}% → {f_end}%")
+        # Данные для Claude
+        stats_data = {
+            "month": month_name,
+            "next_month": next_month,
+            "food_days": food_days,
+            "total_cal": round(total_cal),
+            "total_pfc": f"{round(total_p)}г / {round(total_f)}г / {round(total_c)}г",
+            "avg_cal": avg_cal,
+            "avg_pfc": f"{avg_p}г / {avg_f}г / {avg_c}г",
+            "weight_start": bodies[0]["weight"] if bodies else None,
+            "weight_end": bodies[-1]["weight"] if bodies else None,
+            "fat_start": bodies[0].get("fat_percent") if bodies else None,
+            "fat_end": bodies[-1].get("fat_percent") if bodies else None,
+            "workouts": len(works),
+            "income": round(income, 2),
+            "expense": round(expense, 2),
+            "balance": round(balance, 2),
+        }
 
-        if works:
-            lines.append(f"💪 *Тренировок:* {len(works)} за месяц")
+        prompt = f"""Ты личный ИИ-ассистент. Напиши итог месяца строго в таком формате (Markdown, используй жирный **текст** для заголовков секций):
 
-        if income or expense:
-            lines.append(f"💰 *Финансы:* +{income} / -{expense} {cur} (баланс {income-expense:+.0f})")
+📅 **Итог месяца — {month_name}**
 
-        stats_text = "\n".join(lines)
+🍽 **Питание**
+Данных внесено: {food_days} дней
+
+Итого за внесённые дни:
+{round(total_cal):,} ккал
+Б/Ж/У: {round(total_p):,} г / {round(total_f):,} г / {round(total_c):,} г
+
+Среднее в день:
+{avg_cal:,} ккал
+Б/Ж/У: {avg_p} г / {avg_f} г / {avg_c} г
+
+Комментарий:
+[2-3 предложения: объективная оценка питания за месяц, учитывая что данных {food_days} дней]
+
+⚖️ **Вес и состав тела**
+Вес: {stats_data['weight_start']} → {stats_data['weight_end']} кг
+Изменение: {f"+{round(stats_data['weight_end']-stats_data['weight_start'],1)}" if stats_data['weight_end'] and stats_data['weight_start'] else "нет данных"} кг
+
+Жир: {stats_data['fat_start']}% → {stats_data['fat_end']}%
+Изменение: {f"+{round(stats_data['fat_end']-stats_data['fat_start'],1)}" if stats_data['fat_end'] and stats_data['fat_start'] else "нет данных"}%
+
+Комментарий:
+[2-3 предложения: анализ изменений веса и жира, возможные причины]
+
+💪 **Тренировки**
+Тренировок за месяц: {len(works)}
+
+Комментарий:
+[1-2 предложения: оценка тренировочной активности]
+
+💰 **Финансы**
+Доходы: {income:,.2f} UAH
+Расходы: {expense:,.2f} UAH
+Баланс: {balance:+,.2f} UAH
+
+Комментарий:
+[2 предложения: оценка финансового результата и главный вывод]
+
+📌 **Главные выводы месяца**
+
+1. [вывод про тренировки]
+2. [вывод про питание]
+3. [вывод про вес]
+4. [вывод про финансы]
+
+🎯 **Фокус на {next_month}**
+
+1. [конкретный совет по питанию]
+2. [конкретный совет по тренировкам]
+3. [конкретный совет по финансам]
+4. [совет по контролю веса]
+
+Итог: [одна строка — короткий резюме всего месяца]
+
+Пиши конкретно, без воды, на русском. Не добавляй ничего лишнего за пределами этого шаблона."""
+
         try:
-            conclusion = await gpt(
-                "Ты личный ИИ-ассистент. Дай развёрнутый (3-5 предложений) вывод за месяц. "
-                "Оцени прогресс, отметь достижения и дай конкретный совет на следующий месяц. "
-                "Тепло и конструктивно, на русском.",
-                stats_text
+            text = await gpt("Ты личный ИИ-ассистент, пишешь структурированный отчёт.", prompt)
+        except Exception as e:
+            logger.error(f"monthly gpt error: {e}")
+            # Fallback без Claude
+            w_line = f"{stats_data['weight_start']} → {stats_data['weight_end']} кг" if stats_data['weight_start'] else "нет данных"
+            text = (
+                f"📅 **Итог месяца — {month_name}**\n\n"
+                f"🍽 **Питание**\nДанных внесено: {food_days} дней\n"
+                f"Итого: {round(total_cal):,} ккал | Б/Ж/У: {round(total_p)}г / {round(total_f)}г / {round(total_c)}г\n"
+                f"Среднее/день: {avg_cal} ккал | {avg_p}г / {avg_f}г / {avg_c}г\n\n"
+                f"⚖️ **Вес:** {w_line}\n\n"
+                f"💪 **Тренировок:** {len(works)}\n\n"
+                f"💰 **Финансы:** +{income:,.2f} / -{expense:,.2f} UAH (баланс {balance:+,.2f})"
             )
-            lines.append(f"\n💬 {conclusion}")
-        except:
-            pass
 
-        await bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"monthly summary error: {e}")
 
