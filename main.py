@@ -2427,18 +2427,16 @@ async def send_weekly_summary(bot: Bot):
         logger.error(f"weekly summary error: {e}")
 
 async def send_monthly_summary(bot: Bot):
-    """1-е число 15:00 — сводка за прошлый месяц."""
+    """Последний день месяца 23:50 — сводка за текущий месяц."""
     chat_id = MY_CHAT_ID or os.getenv("MY_CHAT_ID")
     if not chat_id:
         return
     try:
-        now       = now_local()
-        # Прошлый месяц
-        first_this = now.replace(day=1)
-        last_prev  = first_this - timedelta(days=1)
-        month_end  = last_prev.strftime("%Y-%m-%d")
-        month_start = last_prev.replace(day=1).strftime("%Y-%m-%d")
-        month_name  = last_prev.strftime("%B %Y")
+        now         = now_local()
+        # Текущий месяц
+        month_start = now.replace(day=1).strftime("%Y-%m-%d")
+        month_end   = now.strftime("%Y-%m-%d")
+        month_name  = now.strftime("%B %Y")
 
         food   = supabase.table("food_log").select("*").gte("date", month_start).lte("date", month_end).execute().data or []
         bodies = supabase.table("body_measurements").select("date,weight,fat_percent").gte("date", month_start).order("date").execute().data or []
@@ -2496,6 +2494,8 @@ async def send_monthly_summary(bot: Bot):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("monthly", lambda u, c: send_monthly_summary(c.bot)))
+    app.add_handler(CommandHandler("daily", lambda u, c: send_daily_summary(c.bot)))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
