@@ -2591,12 +2591,21 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    async def remind_xcode_resign(bot: Bot):
+        await bot.send_message(chat_id=MY_CHAT_ID, text=(
+            "🔧 *Напоминание: обнови приложение в Xcode*\n\n"
+            "Сертификат разработчика действует 7 дней\\.\n"
+            "Открой Xcode → выбери устройство → нажми ▶ Run\\.\n\n"
+            "Иначе LifeOSSync перестанет открываться на iPhone\\."
+        ), parse_mode="MarkdownV2")
+
     scheduler = AsyncIOScheduler(timezone=TZ)
     scheduler.add_job(check_reminders,      "interval", minutes=1,                          args=[app.bot])
     scheduler.add_job(send_morning_message, "cron", hour=10, minute=0,                      args=[app.bot])
     scheduler.add_job(send_daily_summary,   "cron", hour=23, minute=55,                     args=[app.bot])
     scheduler.add_job(send_weekly_summary,  "cron", day_of_week="sun", hour=22, minute=0,   args=[app.bot])
     scheduler.add_job(send_monthly_summary, "cron", day="last",         hour=23, minute=50,  args=[app.bot])
+    scheduler.add_job(remind_xcode_resign,  "interval", days=6,          hours=12,            args=[app.bot])
     scheduler.start()
 
     # Загружаем кэш продуктов при старте
