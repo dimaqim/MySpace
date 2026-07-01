@@ -2060,6 +2060,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d["date"] = d.get("date") or caption_date or today_str()
             supabase.table("body_measurements").upsert(d, on_conflict="date").execute()
             clear_weigh_pending("done")
+
+            # Считаем БЖУ по формуле: белок = вес × 2.0, жир = вес × 0.9, углеводы = остаток
+            weight = d.get("weight")
+            kcal   = d.get("bmr")
+            if weight and kcal:
+                protein = round(weight * 2.0)
+                fat     = round(weight * 0.9)
+                carbs   = round(max(kcal - protein * 4 - fat * 9, 0) / 4)
+                supabase.table("daily_goals").upsert({
+                    "date": d["date"], "calories": kcal,
+                    "protein": protein, "fat": fat, "carbs": carbs,
+                }, on_conflict="date").execute()
+                macro_line = f"\n📊 *Цели на день:* {kcal} ккал | Б {protein}г | Ж {fat}г | У {carbs}г"
+            else:
+                macro_line = ""
+
             # Краткий отчёт что записали
             lines = [f"✅ *Взвешивание записано!* ({d['date']})\n"]
             if d.get("weight"):          lines.append(f"Вес: {d['weight']} кг")
@@ -2068,6 +2084,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if d.get("muscle_percent"):  lines.append(f"Мышцы: {d['muscle_percent']}%")
             if d.get("water_percent"):   lines.append(f"Вода: {d['water_percent']}%")
             if d.get("bmr"):             lines.append(f"Обмен веществ: {d['bmr']} ккал")
+            if macro_line:               lines.append(macro_line)
             lines.append(f"\n_Всего показателей: {sum(1 for v in d.values() if v not in (None, ''))-1}. Смотри на сайте → Здоровье._")
             await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
             return
